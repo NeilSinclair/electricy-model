@@ -30,6 +30,11 @@ class ElectricityConfig:
     BATTERY_COST_PER_KWH: float
     OPEX_PERCENT_OF_CAPEX: float
 
+    # Battery size
+    BATTERY_SIZE_KWH: int
+    BATTERY_POWER: int
+    SOC_FACTOR: float
+
     @classmethod
     def from_yaml(cls, path: str) -> "ElectricityConfig":
         """Load configuration values from a YAML file."""
@@ -220,11 +225,103 @@ def shift_electricity_usage(df_usage_and_price: pd.DataFrame, config: Electricit
         lambda x: x / x.sum()
     )
 
-    hourly_monthly_avg["temperature_weighted"] = g["inverse_weighted_mean"].transform(
+    hourly_monthly_avg["temperature_weighted_usage"] = g["inverse_weighted_mean"].transform(
             lambda x: np.exp(x / T) / np.exp(x / T).sum()
     )
 
     return hourly_monthly_avg
+
+def shift_electricity_usage_daily(df_usage_and_price: pd.DataFrame, config: ElectricityConfig | None = None) -> pd.DataFrame:
+    """Function which shifts the electricity usage to occur at times with lower prices 
+
+    The algorithm first inverts the price weights so that lower prices have higher weights. It then applies a temperature-based 
+    weighting to create a more peaked distribution at the lower prices. The lower the temperature, the more pronounced the shift towards lower prices.
+    
+    Args:
+        df_usage_and_price (pd.DataFrame): DataFrame containing usage and price data
+        config (ElectricityConfig | None): Configuration parameters. If None, loads from 'config.yaml'.
+    
+    Returns:
+        pd.DataFrame: DataFrame with shifted usage and calculated costs
+    """
+
+    if config is None:
+        config = ElectricityConfig.from_yaml("config.yaml")
+    
+    T = config.ELECTRICITY_SHIFT_FACTOR
+
+    df = df_usage_and_price.copy()
+    df["day_of_year"] = df["datetime"].dt.dayofyear
+    df["year"] = df["datetime"].dt.year
+
+    hourly_daily_average = df.groupby(['hour_of_day', 'day_of_year', "year"])['c_variable_and_fixed_per_kwh'].mean().reset_index()
+
+    g = hourly_daily_average.groupby(["day_of_year", "year"])
+
+    # 1) Per-month weights (sum to 1 within each month)
+    hourly_daily_average["weighted_mean"] = g["c_variable_and_fixed_per_kwh"].transform(
+        lambda x: x / x.sum()
+    )
+
+    # 2) Per-month inverse weights
+    hourly_daily_average["inverse_weighted_mean"] = g["weighted_mean"].transform(
+        lambda x: x.max() - x
+    )
+
+    # 3) (Optional) Normalize inverse weights per month as well
+    hourly_daily_average["inverse_weighted_mean"] = g["inverse_weighted_mean"].transform(
+        lambda x: x / x.sum()
+    )
+
+    hourly_daily_average["temperature_weighted_usage"] = g["inverse_weighted_mean"].transform(
+            lambda x: np.exp(x / T) / np.exp(x / T).sum()
+    )
+
+    return hourly_daily_average
+
+def merge_temperature_shift_with_usage(
+        df_usage_and_price: pd.DataFrame, 
+        hourly_daily_average: pd.DataFrame,
+        on_cols=["day_of_year", "year"],
+        config: ElectricityConfig | None = None
+    ) -> pd.DataFrame:
+    """This function merges the temperature shifted usage profile with the original usage data.
+    Args:
+        df_usage_and_price (pd.DataFrame) - the dateframe
+        hourly_daily_average (pd.DataFrame) - hourly values averaged over each day dataframe with temperature weighted values
+        on_cols (list) - columns to join on, default is ["day_of_year", "month_name", "year"]
+        config (ElectricityConfig | None) - configuration
+    
+    Returns:
+        pd.DataFrame
+    """
+
+    if config is None:
+        config = ElectricityConfig.from_yaml("config.yaml")
+
+    df = df_usage_and_price.copy()
+    hourly_daily_average = hourly_daily_average.copy()
+    df = df.merge(
+        hourly_daily_average[["hour_of_day", "day_of_year", "year", "temperature_weighted_usage"]],
+        left_on=[df["datetime"].dt.hour, df["datetime"].dt.dayofyear, df["datetime"].dt.year],
+        right_on=["hour_of_day", "day_of_year", "year"],
+        how="left"
+    )
+
+    df["day_of_year"] = df["datetime"].dt.dayofyear
+    
+    usage_by_day = df.groupby(["year", "day_of_year"], as_index=False)["scaled_kwh_usage"].sum()
+    usage_by_day = usage_by_day.rename(columns={"scaled_kwh_usage": "daily_total_usage_kwh"})
+    
+    df = df.merge(
+        usage_by_day,
+        on=on_cols,
+        how="left"
+    )
+
+    df = df.drop(columns=["hour_of_day_x", "hour_of_day_y"])
+
+    return df
 
 def calculate_shifted_electricity_cost(
         df_usage_and_price: pd.DataFrame, 
@@ -251,7 +348,7 @@ def calculate_shifted_electricity_cost(
     hourly_monthly_avg = hourly_monthly_avg.copy()
 
     df = df.merge(
-        hourly_monthly_avg[["hour_of_day", "month_name", "temperature_weighted"]],
+        hourly_monthly_avg[["hour_of_day", "month_name", "temperature_weighted_usage"]],
         left_on=[df["datetime"].dt.hour, df['datetime'].dt.month_name()],
         right_on=["hour_of_day", "month_name"],
         how="left"
@@ -268,9 +365,9 @@ def calculate_shifted_electricity_cost(
         how="left"
     )
 
-    df["prop_shifted_usage"] = (df["temperature_weighted"] * df["daily_total_usage_kwh"]) 
+    df["shifted_usage_kwh"] = (df["temperature_weighted_usage"] * df["daily_total_usage_kwh"]) 
 
-    df["c_total_variable_shifted_cost"] = df["prop_shifted_usage"] * 1/config.BATTERY_INEFFICIENCY_FACTOR * (df["c_per_kwh_variable"] + df["c_fixed_costs_kwh"]) * (1 + config.TAX_RATE)
+    df["c_total_variable_shifted_cost"] = df["shifted_usage_kwh"] * 1/config.BATTERY_INEFFICIENCY_FACTOR * (df["c_per_kwh_variable"] + df["c_fixed_costs_kwh"]) * (1 + config.TAX_RATE)
 
-    df.drop(columns=["hour_of_day", "day_of_year", "hour_of_day_x", "hour_of_day_y", "temperature_weighted", "daily_total_usage_kwh"], inplace=True)
+    df.drop(columns=["hour_of_day", "day_of_year", "hour_of_day_x", "hour_of_day_y", "daily_total_usage_kwh"], inplace=True)
     return df
