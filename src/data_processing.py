@@ -35,6 +35,9 @@ class ElectricityConfig:
     BATTERY_POWER: int
     SOC_FACTOR: float
 
+    # Other
+    INFLATION_RATE: float
+
     @classmethod
     def from_yaml(cls, path: str) -> "ElectricityConfig":
         """Load configuration values from a YAML file."""
@@ -370,4 +373,80 @@ def calculate_shifted_electricity_cost(
     df["c_total_variable_shifted_cost"] = df["shifted_usage_kwh"] * 1/config.BATTERY_INEFFICIENCY_FACTOR * (df["c_per_kwh_variable"] + df["c_fixed_costs_kwh"]) * (1 + config.TAX_RATE)
 
     df.drop(columns=["hour_of_day", "day_of_year", "hour_of_day_x", "hour_of_day_y", "daily_total_usage_kwh"], inplace=True)
+    return df
+
+
+def allocate_battery_storage(df: pd.DataFrame, config) -> pd.DataFrame:
+    """
+    Allocate battery storage chronologically while selecting cheapest hours
+    for charging on each day.
+
+    Charging rule:
+        - Precompute cheapest hours in the day (sorted by cost)
+        - But THEN step through the day chronologically and charge only when
+          current hour is one of the selected cheap hours.
+        - Apply per-hour max charging rate: config.BATTERY_POWER
+        - Keep battery continuity across days (does not reset at midnight)
+    """
+
+    df = df.copy()
+    df["stored_per_hour_kwh"] = 0.0
+    df["battery_discharge"] = 0.0
+    df["battery_level"] = 0.0
+    df["reverse_temperature_weighted_usage"] = 1.0 - df["temperature_weighted_usage"]
+
+    battery_max = config.BATTERY_SIZE_KWH * config.SOC_FACTOR
+    battery_storage = 0.0
+
+    # group by day/year
+    for year in df["year"].unique():
+        days = df.loc[df["year"] == year, "day_of_year"].unique()
+
+        for day in days:
+            mask = (df["year"] == year) & (df["day_of_year"] == day)
+
+            day_df = df.loc[mask]
+
+            # ---- STEP 1: Determine which hours are used for charging (cheapest hours first) ---- #
+            # Theoretical hours you *could* charge: as many hours as needed to fill battery
+            # at max power per hour
+            hours_needed_to_fill = int(np.ceil((battery_max - battery_storage) / config.BATTERY_POWER))
+            hours_needed_to_fill = max(hours_needed_to_fill+1, 0)
+
+            cheap_indices = (
+                day_df.sort_values("c_per_kwh_variable")
+                      .head(hours_needed_to_fill)
+                      .index
+            )
+
+            # ---- STEP 2: Chronological loop for the actual operations ---- #
+            for idx in day_df.sort_values("datetime").index:
+
+                # --- CHARGING --- #
+                if idx in cheap_indices and battery_storage < battery_max:
+                    charge_amount = min(
+                        config.BATTERY_POWER,
+                        battery_max - battery_storage
+                    )
+                    battery_storage += (charge_amount * config.BATTERY_INEFFICIENCY_FACTOR)
+                    df.at[idx, "stored_per_hour_kwh"] = charge_amount
+
+                # --- DISCHARGING --- #
+                # how much usage we want to offset from battery
+                if df.at[idx, "stored_per_hour_kwh"] > 10: # type: ignore
+                    discharge_need = 0.0
+                else:
+                    discharge_need = df.at[idx, "reverse_temperature_weighted_usage"] * df.at[idx, "scaled_kwh_usage"] # type: ignore
+                
+                actual_discharge = max(min(battery_storage, discharge_need),0) # type: ignore
+
+                df.at[idx, "battery_discharge"] = actual_discharge 
+                battery_storage -= actual_discharge * (1/ config.BATTERY_INEFFICIENCY_FACTOR)
+
+                # --- UPDATE LEVEL --- #
+                df.at[idx, "battery_level"] = max(battery_storage, 0)
+
+    df["usage_with_battery"] = df["scaled_kwh_usage"] - df["battery_discharge"] + df["stored_per_hour_kwh"]
+    df["c_variable_total_cost_with_battery"] = df["usage_with_battery"] * df["c_variable_and_fixed_per_kwh"] * (1 + config.TAX_RATE)
+
     return df

@@ -1,7 +1,7 @@
 # Default configuration values for electricity cost modeling
 
 # Usage and rates
-ANNUAL_USAGE: 200000
+ANNUAL_USAGE: 20000
 BASELINE_USAGE_MWH: 1000000
 FLAT_RATE_C_PER_KWH: 30.0
 
@@ -23,5 +23,8 @@ BATTERY_POWER: 50
 SOC_FACTOR: 0.8
 
 # Battery investment
-BATTERY_COST_PER_KWH: 250
-OPEX_PERCENT_OF_CAPEX: 0.05
+BATTERY_COST_PER_KWH: 300
+OPEX_PERCENT_OF_CAPEX: 0.1
+
+# Other
+INFLATION_RATE: 0.02

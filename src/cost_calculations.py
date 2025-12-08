@@ -18,7 +18,7 @@ def calculate_projections(usage_df: pd.DataFrame, config: ElectricityConfig | No
 
     monthly_costs = usage_df.resample("MS", on="datetime").agg({
             "c_total_variable_cost": "sum",
-            "c_total_variable_shifted_cost": "sum"
+            "c_variable_total_cost_with_battery": "sum"
     }).reset_index()    
 
 
@@ -43,12 +43,12 @@ def calculate_projections(usage_df: pd.DataFrame, config: ElectricityConfig | No
             
             # Get scalar values instead of Series
             current_variable_cost = monthly_costs_extended.loc[monthly_costs_extended["datetime"] == d, "c_total_variable_cost"].values[0]
-            current_shifted_cost = monthly_costs_extended.loc[monthly_costs_extended["datetime"] == d, "c_total_variable_shifted_cost"].values[0]
+            current_shifted_cost = monthly_costs_extended.loc[monthly_costs_extended["datetime"] == d, "c_variable_total_cost_with_battery"].values[0]
             
-            monthly_costs_extended.loc[monthly_costs_extended["datetime"] == next_year, "c_total_variable_cost"] = current_variable_cost * 1.02
-            monthly_costs_extended.loc[monthly_costs_extended["datetime"] == next_year, "c_total_variable_shifted_cost"] = current_shifted_cost * 1.02
+            monthly_costs_extended.loc[monthly_costs_extended["datetime"] == next_year, "c_total_variable_cost"] = current_variable_cost * (1 + config.INFLATION_RATE)
+            monthly_costs_extended.loc[monthly_costs_extended["datetime"] == next_year, "c_variable_total_cost_with_battery"] = current_shifted_cost * (1 + config.INFLATION_RATE)
             
     monthly_costs_extended["c_total_variable_cost_cumulative"] = monthly_costs_extended["c_total_variable_cost"].cumsum()
-    monthly_costs_extended["c_total_variable_shifted_cost_cumulative"] = monthly_costs_extended["c_total_variable_shifted_cost"].cumsum()
+    monthly_costs_extended["c_variable_total_cost_with_battery_cumulative"] = monthly_costs_extended["c_variable_total_cost_with_battery"].cumsum()
 
     return monthly_costs_extended
