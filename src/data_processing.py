@@ -436,7 +436,8 @@ def allocate_battery_storage(df: pd.DataFrame, config) -> pd.DataFrame:
                 if df.at[idx, "stored_per_hour_kwh"] > 10: # type: ignore
                     discharge_need = 0.0
                 else:
-                    discharge_need = df.at[idx, "reverse_temperature_weighted_usage"] * df.at[idx, "scaled_kwh_usage"] # type: ignore
+                    # discharge_need = df.at[idx, "reverse_temperature_weighted_usage"] * df.at[idx, "scaled_kwh_usage"] # type: ignore
+                    discharge_need = df.at[idx, "scaled_kwh_usage"] # type: ignore
                 
                 actual_discharge = max(min(battery_storage, discharge_need),0) # type: ignore
 
