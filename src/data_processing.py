@@ -82,7 +82,7 @@ def process_hourly_energy_profile(start_date: str = "2025-01-01 00:00", end_date
     "Sunday": "FT"
     }
 
-    de_holidays = holidays.Germany(years=2025)
+    de_holidays = holidays.Germany(years=[2025,2024])
 
     # 1. Create all 15-minute timestamps for 2025
     dt_index = pd.date_range(
@@ -110,16 +110,29 @@ def process_hourly_energy_profile(start_date: str = "2025-01-01 00:00", end_date
     pd.set_option("display.max_rows", 10)
 
     df = df.merge(
-    data,
-    on = ["month_name", "day_type", "time"],
-    how="left"
-    ).drop(columns=["day_type", "time", "date", "holiday_name", "is_holiday"])
+        data,
+        on = ["month_name", "day_type", "time"],
+        how="left"
+    )#.drop(columns=["day_type", "time", "date", "holiday_name", "is_holiday"])
 
     df = df.set_index("datetime")
 
     df_hourly = pd.DataFrame(df.resample("h")["value"].mean()).reset_index()
 
     return df_hourly
+
+def process_heat_energy_profile() -> pd.DataFrame:
+    """Function which processes raw heat energy profile data and merges with hourly energy profile"""
+    heat_data_hourly = pd.read_csv('data/heat_data.csv', sep=';')
+    heat_data_hourly["Timestamp"] = pd.to_datetime(heat_data_hourly["Timestamp"], unit="s", utc=True)
+    heat_data_hourly["Timestamp"] = heat_data_hourly["Timestamp"].dt.tz_convert(None)
+
+    heat_data_hourly = heat_data_hourly.rename(columns={"Timestamp": "datetime", "Heat Pump Demand kWh (electrical)": "value"})
+    heat_data_hourly["value"] = heat_data_hourly["value"].str.replace(',', '.')
+    heat_data_hourly = heat_data_hourly.astype({'value': 'float'})
+    heat_data_hourly = heat_data_hourly[['datetime', 'value']]
+
+    return heat_data_hourly
 
 def process_day_ahead_data(df_hourly: pd.DataFrame) -> pd.DataFrame:
     """Function which processes raw day-ahead price data and merges with hourly energy profile"""
@@ -186,7 +199,7 @@ def calculate_usage_and_price(df_hourly: pd.DataFrame, day_ahead_hourly: pd.Data
 
     df_usage_and_price["c_per_kwh_flat_rate_cost"] = config.FLAT_RATE_C_PER_KWH
     df_usage_and_price["c_total_flat_cost"] = (df_usage_and_price["c_per_kwh_flat_rate_cost"] * df_usage_and_price["scaled_kwh_usage"]) * (1+config.TAX_RATE)
-
+    print(f'c_flat_cost_per_kwh: {df_usage_and_price["scaled_kwh_usage"].sum() / df_usage_and_price["c_total_flat_cost"].sum():,.2f}')
 
     return df_usage_and_price
 
@@ -419,6 +432,12 @@ def allocate_battery_storage(df: pd.DataFrame, config) -> pd.DataFrame:
                       .index
             )
 
+            expensive_indices = (
+                day_df.sort_values("c_per_kwh_variable", ascending=False)
+                      .head(hours_needed_to_fill * 2)
+                      .index
+            )
+
             # ---- STEP 2: Chronological loop for the actual operations ---- #
             for idx in day_df.sort_values("datetime").index:
 
@@ -431,18 +450,26 @@ def allocate_battery_storage(df: pd.DataFrame, config) -> pd.DataFrame:
                     battery_storage += (charge_amount * config.BATTERY_INEFFICIENCY_FACTOR)
                     df.at[idx, "stored_per_hour_kwh"] = charge_amount
 
-                # --- DISCHARGING --- #
-                # how much usage we want to offset from battery
-                if df.at[idx, "stored_per_hour_kwh"] > 10: # type: ignore
-                    discharge_need = 0.0
-                else:
-                    # discharge_need = df.at[idx, "reverse_temperature_weighted_usage"] * df.at[idx, "scaled_kwh_usage"] # type: ignore
+                if idx in expensive_indices and battery_storage > 0:
+                    # try to discharge during expensive hours as well
                     discharge_need = df.at[idx, "scaled_kwh_usage"] # type: ignore
-                
-                actual_discharge = max(min(battery_storage, discharge_need),0) # type: ignore
+                    actual_discharge = max(min(battery_storage, discharge_need),0) # type: ignore
 
-                df.at[idx, "battery_discharge"] = actual_discharge 
-                battery_storage -= actual_discharge * (1/ config.BATTERY_INEFFICIENCY_FACTOR)
+                    df.at[idx, "battery_discharge"] = actual_discharge 
+                    battery_storage -= actual_discharge * (1/ config.BATTERY_INEFFICIENCY_FACTOR)
+
+                # # --- DISCHARGING --- #
+                # # how much usage we want to offset from battery
+                # if df.at[idx, "stored_per_hour_kwh"] > 10: # type: ignore
+                #     discharge_need = 0.0
+                # else:
+                #     # discharge_need = df.at[idx, "reverse_temperature_weighted_usage"] * df.at[idx, "scaled_kwh_usage"] # type: ignore
+                #     discharge_need = df.at[idx, "scaled_kwh_usage"] # type: ignore
+                
+                # actual_discharge = max(min(battery_storage, discharge_need),0) # type: ignore
+
+                # df.at[idx, "battery_discharge"] = actual_discharge 
+                # battery_storage -= actual_discharge * (1/ config.BATTERY_INEFFICIENCY_FACTOR)
 
                 # --- UPDATE LEVEL --- #
                 df.at[idx, "battery_level"] = max(battery_storage, 0)
