@@ -1,15 +1,46 @@
 import pulp as pl
+from src.data_processing import ElectricityConfig
+import pandas as pd
+from dataclasses import dataclass
+
+@dataclass
+class BatteryDispatchResult:
+    grid: list[float]
+    charge: list[float]
+    discharge: list[float]
+    soc: list[float]
+    mode: list[str]
+    price: list[float]
+    total_cost: float | None
+
 
 def solve_battery_dispatch_pulp(
-    price,
-    demand,
-    E_MAX,
-    P_MAX,
-    DT=1.0,
-    ETA_C=1.0,
-    ETA_D=1.0,
-    soc_init=0.0,
-):
+    price: pd.Series,
+    demand: pd.Series,
+    config: ElectricityConfig | None = None,
+) -> BatteryDispatchResult:
+    """Fuction which solves an enery storage optimisation problem using MILP with PuLP.
+    
+    Args:
+        price (obj:`pd.Series`): Series of electricity prices (€/kWh).
+        demand (obj:`pd.Series`): Series of electricity demand (kWh).
+        config (ElectricityConfig | None): Configuration object, if None loads from 'config.yaml
+    
+    Returns:
+        BatteryDispatchResult: Object containing optimisation results.    
+    """
+    
+    if config is None:
+        config = ElectricityConfig.from_yaml("config.yaml")
+
+    E_MAX = config.BATTERY_SIZE_KWH
+    P_MAX = config.BATTERY_POWER
+    DT=1.0
+    ETA_C=config.BATTERY_INEFFICIENCY_FACTOR
+    ETA_D=config.BATTERY_INEFFICIENCY_FACTOR
+    soc_init=0.0
+    SOC_MIN = (1-config.SOC_FACTOR) * E_MAX
+    SOC_MAX = config.SOC_FACTOR * E_MAX
     T = len(price)
     C_MAX = P_MAX * DT
 
@@ -19,7 +50,7 @@ def solve_battery_dispatch_pulp(
     g = pl.LpVariable.dicts("grid", range(T), lowBound=0)
     c = pl.LpVariable.dicts("charge", range(T), lowBound=0)
     u = pl.LpVariable.dicts("discharge", range(T), lowBound=0)
-    s = pl.LpVariable.dicts("soc", range(T), lowBound=0, upBound=E_MAX)
+    s = pl.LpVariable.dicts("soc", range(T), lowBound=SOC_MIN, upBound=SOC_MAX)
 
     # binary: 1 = charging allowed, 0 = discharging allowed
     y = pl.LpVariable.dicts("is_charging", range(T), cat="Binary")
@@ -49,13 +80,14 @@ def solve_battery_dispatch_pulp(
     model.solve(pl.PULP_CBC_CMD(msg=False))
 
     # ---- extract solution ----
-    result = {
-        "grid": [pl.value(g[t]) for t in range(T)],
-        "charge": [pl.value(c[t]) for t in range(T)],
-        "discharge": [pl.value(u[t]) for t in range(T)],
-        "soc": [pl.value(s[t]) for t in range(T)],
-        "mode": ["charge" if pl.value(y[t]) > 0.5 else "discharge" for t in range(T)],
-        "total_cost": pl.value(model.objective),
-    }
+    result = BatteryDispatchResult(
+        grid = [pl.value(g[t]) for t in range(T)],
+        charge = [pl.value(c[t]) for t in range(T)],
+        discharge = [pl.value(u[t]) for t in range(T)],
+        soc = [pl.value(s[t]) for t in range(T)],
+        mode = ["charge" if pl.value(y[t]) > 0.5 else "discharge" for t in range(T)],
+        price = price.tolist(),
+        total_cost = pl.value(model.objective),
+    )
 
     return result

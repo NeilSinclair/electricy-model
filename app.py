@@ -73,16 +73,17 @@ def show_cost_modelling(config):
     
     with col1:
         st.subheader("Usage & Rates")
-        soc_factor = st.number_input(
+        st.session_state.config.SOC_FACTOR = st.number_input(
             "SOC factor", 
             value=config.SOC_FACTOR,
-            step=0.1
+            step=0.05
         )
-        flat_rate = st.number_input(
+        st.session_state.config.FLAT_RATE_C_PER_KWH = st.number_input(
             "Flat Rate (c/kWh)", 
             value=config.FLAT_RATE_C_PER_KWH,
             step=1.0
         )
+
     
     with col2:
         st.subheader("Battery Parameters")
