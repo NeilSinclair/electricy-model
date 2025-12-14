@@ -7,7 +7,6 @@ from datetime import datetime, timedelta
 
 import logging
 
-from streamlit_date_picker import date_range_picker, date_picker, PickerType
 from src.data_processing import get_usage_data, ElectricityConfig
 from src.pulp_optimiser import solve_battery_dispatch_pulp, BatteryDispatchResult
 from src.cost_calculations import calculate_projections
@@ -131,17 +130,17 @@ def show_cost_modelling(config):
             step=10.0
         )
         st.session_state.config.OPEX_PERCENT_OF_CAPEX = st.number_input(
-            "OPEX (% of CAPEX)", 
-            value=config.OPEX_PERCENT_OF_CAPEX  * 100,
-            step=1.0,
-            format="%.1f"
+            "OPEX (% / 100 of CAPEX)", 
+            value=config.OPEX_PERCENT_OF_CAPEX ,
+            step=0.01,
+            format="%.2f"
         )
         if st.session_state.config.OPEX_PERCENT_OF_CAPEX is not None:
-            st.session_state.config.OPEX_PERCENT_OF_CAPEX = st.session_state.config.OPEX_PERCENT_OF_CAPEX / 100
+            st.session_state.config.OPEX_PERCENT_OF_CAPEX = st.session_state.config.OPEX_PERCENT_OF_CAPEX 
         else:
             st.session_state.config.OPEX_PERCENT_OF_CAPEX = st.session_state.config.OPEX_PERCENT_OF_CAPEX
         st.session_state.config.INFLATION_RATE = st.number_input(
-            "Inflation Rate", 
+            "Inflation Rate (% / 100)", 
             value=config.INFLATION_RATE,
             step=0.01,
             format="%.2f"
@@ -159,13 +158,13 @@ def show_cost_modelling(config):
             format="%.2f"
         )
         st.session_state.config.TAX_RATE = st.number_input(
-            "Tax Rate", 
+            "Tax Rate (% / 100)", 
             value=config.TAX_RATE,
             step=0.01,
             format="%.2f"
         )
     
-    with col5:
+    with col5:  
         st.session_state.config.ELECTRICITY_TAX = st.number_input(
             "Electricity Tax", 
             value=config.ELECTRICITY_TAX,
