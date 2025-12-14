@@ -120,9 +120,9 @@ def process_hourly_energy_profile(start_date: str = "2025-01-01 00:00", end_date
 
     return df_hourly
 
-def process_heat_energy_profile() -> pd.DataFrame:
+def process_heat_energy_profile(data_path: str = 'data/heat_data.csv') -> pd.DataFrame:
     """Function which processes raw heat energy profile data and merges with hourly energy profile"""
-    heat_data_hourly = pd.read_csv('data/heat_data.csv', sep=';')
+    heat_data_hourly = pd.read_csv(data_path, sep=';')
     heat_data_hourly["Timestamp"] = pd.to_datetime(heat_data_hourly["Timestamp"], unit="s", utc=True)
     heat_data_hourly["Timestamp"] = heat_data_hourly["Timestamp"].dt.tz_convert(None)
 
@@ -133,9 +133,9 @@ def process_heat_energy_profile() -> pd.DataFrame:
 
     return heat_data_hourly
 
-def process_day_ahead_data(df_hourly: pd.DataFrame) -> pd.DataFrame:
+def process_day_ahead_data(df_hourly: pd.DataFrame, data_path: str = 'data/day_ahead_1yr.csv') -> pd.DataFrame:
     """Function which processes raw day-ahead price data and merges with hourly energy profile"""
-    day_ahead = pd.read_csv("data/day_ahead_1yr.csv", sep=";")
+    day_ahead = pd.read_csv(data_path, sep=";")
 
     day_ahead = day_ahead[["Start date", "End date", "Germany/Luxembourg [€/MWh] Original resolutions", "∅ DE/LU neighbours [€/MWh] Original resolutions"]]
 
