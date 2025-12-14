@@ -11,7 +11,7 @@ class BatteryDispatchResult:
     soc: list[float]
     mode: list[str]
     price: list[float]
-    total_cost: float | None
+    total_cost: float | None = None
 
 
 def solve_battery_dispatch_pulp(
@@ -31,16 +31,21 @@ def solve_battery_dispatch_pulp(
     """
     
     if config is None:
-        config = ElectricityConfig.from_yaml("config.yaml")
+        config = ElectricityConfig.from_yaml("config/config.yaml")
 
     E_MAX = config.BATTERY_SIZE_KWH
     P_MAX = config.BATTERY_POWER
     DT=1.0
     ETA_C=config.BATTERY_INEFFICIENCY_FACTOR
     ETA_D=config.BATTERY_INEFFICIENCY_FACTOR
-    soc_init=0.0
-    SOC_MIN = (1-config.SOC_FACTOR) * E_MAX
-    SOC_MAX = config.SOC_FACTOR * E_MAX
+
+    # If SOC_FACTOR is 0.8, batthery charges from 10% to 90% of E_MAX
+    min_perc = (1-config.SOC_FACTOR)/2
+    max_perc = 1 - min_perc
+    SOC_MIN = min_perc * E_MAX
+    SOC_MAX = max_perc * E_MAX
+
+    soc_init = SOC_MIN 
     T = len(price)
     C_MAX = P_MAX * DT
 
@@ -78,6 +83,8 @@ def solve_battery_dispatch_pulp(
 
     # ---- solve ----
     model.solve(pl.PULP_CBC_CMD(msg=False))
+    status = pl.LpStatus[model.status]
+    print("Solver status:", status)
 
     # ---- extract solution ----
     result = BatteryDispatchResult(

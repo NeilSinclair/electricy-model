@@ -13,17 +13,18 @@ def calculate_projections(usage_df: pd.DataFrame, config: ElectricityConfig | No
         pd.DataFrame: DataFrame containing breakeven analysis results.
     """
     if config is None:
-        config = ElectricityConfig.from_yaml("config.yaml")
+        config = ElectricityConfig.from_yaml("config/config.yaml")
 
     monthly_costs = usage_df.resample("MS", on="datetime").agg({
             "c_total_variable_cost": "sum",
-            "c_variable_total_cost_with_battery": "sum"
+            "c_variable_total_cost_with_battery": "sum",
+            "c_total_flat_cost": "sum"
     }).reset_index()    
 
 
     dt_index = pd.date_range(
         start=monthly_costs["datetime"].min(),
-        end=monthly_costs["datetime"].max() + pd.Timedelta(weeks=(52*10)+2),   # last 15-minute slot of the year
+        end=monthly_costs["datetime"].max() + pd.Timedelta(weeks=(52*10)+2),  
         freq="MS"
     )
 
@@ -41,13 +42,16 @@ def calculate_projections(usage_df: pd.DataFrame, config: ElectricityConfig | No
             next_year = (d + pd.DateOffset(years=1)).to_period('M').to_timestamp()
             
             # Get scalar values instead of Series
-            current_variable_cost = monthly_costs_extended.loc[monthly_costs_extended["datetime"] == d, "c_total_variable_cost"].values[0]
-            current_shifted_cost = monthly_costs_extended.loc[monthly_costs_extended["datetime"] == d, "c_variable_total_cost_with_battery"].values[0]
+            current_variable_cost = monthly_costs_extended.loc[monthly_costs_extended["datetime"] == d, "c_total_variable_cost"].values[0] # type: ignore
+            current_optimised_cost = monthly_costs_extended.loc[monthly_costs_extended["datetime"] == d, "c_variable_total_cost_with_battery"].values[0] # type: ignore
+            current_fixed_cost = monthly_costs_extended.loc[monthly_costs_extended["datetime"] == d, "c_total_flat_cost"].values[0] # type: ignore
             
             monthly_costs_extended.loc[monthly_costs_extended["datetime"] == next_year, "c_total_variable_cost"] = current_variable_cost * (1 + config.INFLATION_RATE)
-            monthly_costs_extended.loc[monthly_costs_extended["datetime"] == next_year, "c_variable_total_cost_with_battery"] = current_shifted_cost * (1 + config.INFLATION_RATE)
-            
+            monthly_costs_extended.loc[monthly_costs_extended["datetime"] == next_year, "c_variable_total_cost_with_battery"] = current_optimised_cost * (1 + config.INFLATION_RATE)
+            monthly_costs_extended.loc[monthly_costs_extended["datetime"] == next_year, "c_total_flat_cost"] = current_fixed_cost * (1 + config.INFLATION_RATE)
+
     monthly_costs_extended["c_total_variable_cost_cumulative"] = monthly_costs_extended["c_total_variable_cost"].cumsum()
     monthly_costs_extended["c_variable_total_cost_with_battery_cumulative"] = monthly_costs_extended["c_variable_total_cost_with_battery"].cumsum()
+    monthly_costs_extended["c_total_flat_cost_cumulative"] = monthly_costs_extended["c_total_flat_cost"].cumsum()
 
     return monthly_costs_extended

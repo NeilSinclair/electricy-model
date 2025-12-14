@@ -10,33 +10,32 @@ import yaml
 @dataclass
 class ElectricityConfig:
     # Usage and rates
-    ANNUAL_USAGE: int
-    BASELINE_USAGE_MWH: int
-    FLAT_RATE_C_PER_KWH: float
+    ANNUAL_USAGE: int = 1_000_000
+    BASELINE_USAGE_MWH: int = 200_00
+    FLAT_RATE_C_PER_KWH: float = 30.0
 
     # Battery parameters
-    BATTERY_INEFFICIENCY_FACTOR: float
-    ELECTRICITY_SHIFT_FACTOR: float
+    BATTERY_INEFFICIENCY_FACTOR: float = 0.95
 
-    # Additional costs (€/MWh)
-    NETWORK_USAGE: float
-    TAX_RATE: float
-    ELECTRICITY_TAX: float
-    ADDITIONAL_COST: float
-    KONZESSION: float
-    CHP_SURCHARGE: float
+    # Additional costs (c/kWh)
+    NETWORK_USAGE: float = 8.71
+    TAX_RATE: float= 0.19
+    ELECTRICITY_TAX: float = 2.05
+    ADDITIONAL_COST: float = 1.88
+    KONZESSION: float = 1.66
+    CHP_SURCHARGE: float = 0.45
 
     # Battery investment
-    BATTERY_COST_PER_KWH: float
-    OPEX_PERCENT_OF_CAPEX: float
+    BATTERY_COST_PER_KWH: float = 300.0
+    OPEX_PERCENT_OF_CAPEX: float = 0.05
 
     # Battery size
-    BATTERY_SIZE_KWH: int
-    BATTERY_POWER: int
-    SOC_FACTOR: float
+    BATTERY_SIZE_KWH: int = 120
+    BATTERY_POWER: int = 50
+    SOC_FACTOR: float = 0.8
 
     # Other
-    INFLATION_RATE: float
+    INFLATION_RATE: float = 0.02
 
     @classmethod
     def from_yaml(cls, path: str) -> "ElectricityConfig":
@@ -168,7 +167,7 @@ def calculate_usage_and_price(df_hourly: pd.DataFrame, day_ahead_hourly: pd.Data
     """
 
     if config is None:
-        config = ElectricityConfig.from_yaml("config.yaml")
+        config = ElectricityConfig.from_yaml("config/config.yaml")
 
     SCALE_FACTOR = config.ANNUAL_USAGE / config.BASELINE_USAGE_MWH
 
@@ -199,13 +198,12 @@ def calculate_usage_and_price(df_hourly: pd.DataFrame, day_ahead_hourly: pd.Data
 
     df_usage_and_price["c_per_kwh_flat_rate_cost"] = config.FLAT_RATE_C_PER_KWH
     df_usage_and_price["c_total_flat_cost"] = (df_usage_and_price["c_per_kwh_flat_rate_cost"] * df_usage_and_price["scaled_kwh_usage"]) * (1+config.TAX_RATE)
-    print(f'c_flat_cost_per_kwh: {df_usage_and_price["scaled_kwh_usage"].sum() / df_usage_and_price["c_total_flat_cost"].sum():,.2f}')
 
     return df_usage_and_price
 
 def get_usage_data():
     """Function which loads and processes all necessary data and configuration."""
-    config = ElectricityConfig.from_yaml("config.yaml")
+    config = ElectricityConfig.from_yaml("config/config.yaml")
     df_hourly = process_heat_energy_profile()
     day_ahead_hourly = process_day_ahead_data(df_hourly)
     df_usage_and_price = calculate_usage_and_price(df_hourly, day_ahead_hourly, config=config)
