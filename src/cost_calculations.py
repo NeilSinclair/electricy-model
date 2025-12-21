@@ -55,3 +55,49 @@ def calculate_projections(usage_df: pd.DataFrame, config: ElectricityConfig | No
     monthly_costs_extended["c_total_flat_cost_cumulative"] = monthly_costs_extended["c_total_flat_cost"].cumsum()
 
     return monthly_costs_extended
+
+def extend_raw_data(df: pd.DataFrame, years: int, config: ElectricityConfig) -> pd.DataFrame:
+    """Extend raw usage data by a specified number of years.
+
+    Args:
+        df (pd.DataFrame): Original DataFrame containing usage data.
+        years (int): Number of years to extend the data.
+        config (ElectricityConfig): Configuration object.
+
+    Returns:
+        pd.DataFrame: Extended DataFrame.
+    """
+    cols = ["c_variable_and_fixed_per_kwh", "raw_kwh_usage", "scaled_kwh_usage", "c_total_variable_cost", "c_total_flat_cost"]
+    df = df.copy()
+
+    if True:
+        for col in ["raw_kwh_usage", "scaled_kwh_usage","c_total_variable_cost", "c_total_flat_cost"]:
+            df[col] = df[col] * years
+        return df
+    else:
+        dt_index = pd.date_range(
+            start=df["datetime"].min(),
+            end=df["datetime"].max() + pd.DateOffset(years=(years-1)),
+            freq="h"
+        )
+
+        df_dates = pd.DataFrame({"datetime": dt_index})
+
+        df_extended = pd.merge(
+            df_dates,
+            df[["datetime"] + cols],
+            on="datetime",
+            how="left"
+        )
+
+        # Fill missing values by repeating the original data pattern
+        original_length = len(df)
+        for i in range(len(df_extended)):
+            for col in cols:
+                if pd.isna(df_extended.loc[i, col]):
+                    # Get the inflation factor over time
+                    # multiplier = (1 + config.INFLATION_RATE) ** (i // 365) if col == "c_variable_and_fixed_per_kwh" else 1
+                    multiplier = 1
+                    df_extended.loc[i, col] = df.loc[i % original_length, col] * (multiplier) # type: ignore
+
+        return df_extended

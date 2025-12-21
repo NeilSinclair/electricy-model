@@ -2,6 +2,9 @@ import pulp as pl
 from src.data_processing import ElectricityConfig
 import pandas as pd
 from dataclasses import dataclass
+import logging
+
+logging.basicConfig(level=logging.INFO)
 
 @dataclass
 class BatteryDispatchResult:
@@ -11,12 +14,14 @@ class BatteryDispatchResult:
     soc: list[float]
     mode: list[str]
     price: list[float]
+    battery_size: float | None = None
     total_cost: float | None = None
 
 
 def solve_battery_dispatch_pulp(
     price: pd.Series,
     demand: pd.Series,
+    years: int = 1,
     config: ElectricityConfig | None = None,
 ) -> BatteryDispatchResult:
     """Fuction which solves an enery storage optimisation problem using MILP with PuLP.
@@ -33,19 +38,19 @@ def solve_battery_dispatch_pulp(
     if config is None:
         config = ElectricityConfig.from_yaml("config/config.yaml")
 
-    E_MAX = config.BATTERY_SIZE_KWH
+    
     P_MAX = config.BATTERY_POWER
     DT=1.0
     ETA_C=config.BATTERY_INEFFICIENCY_FACTOR
     ETA_D=config.BATTERY_INEFFICIENCY_FACTOR
 
-    # If SOC_FACTOR is 0.8, batthery charges from 10% to 90% of E_MAX
-    min_perc = (1-config.SOC_FACTOR)/2
-    max_perc = 1 - min_perc
-    SOC_MIN = min_perc * E_MAX
-    SOC_MAX = max_perc * E_MAX
+    # The battery cost needs to be in the same units (c) as the price series
+    battery_cost_per_kwh_c = config.BATTERY_COST_PER_KWH * 100 / years
 
-    soc_init = SOC_MIN 
+    # If SOC_FACTOR is 0.8, batthery charges from 10% to 90% of E_MAX
+    alpha = (1-config.SOC_FACTOR)/2
+    beta = 1 - alpha
+
     T = len(price)
     C_MAX = P_MAX * DT
 
@@ -55,13 +60,18 @@ def solve_battery_dispatch_pulp(
     g = pl.LpVariable.dicts("grid", range(T), lowBound=0)
     c = pl.LpVariable.dicts("charge", range(T), lowBound=0)
     u = pl.LpVariable.dicts("discharge", range(T), lowBound=0)
-    s = pl.LpVariable.dicts("soc", range(T), lowBound=SOC_MIN, upBound=SOC_MAX)
+    s = pl.LpVariable.dicts("soc", range(T), lowBound=0)
+    b = pl.LpVariable("battery_size", lowBound=0, upBound=300, cat=pl.LpContinuous)
 
     # binary: 1 = charging allowed, 0 = discharging allowed
     y = pl.LpVariable.dicts("is_charging", range(T), cat="Binary")
 
     # ---- objective: minimise grid cost ----
-    model += pl.lpSum(price[t] * g[t] for t in range(T))
+    logging.info(f"Battery cost per kWh: {config.BATTERY_COST_PER_KWH}")
+    model += (
+        pl.lpSum(price[t] * g[t] for t in range(T))
+        + battery_cost_per_kwh_c * b
+    )
 
     for t in range(T):
 
@@ -72,19 +82,36 @@ def solve_battery_dispatch_pulp(
         model += c[t] <= C_MAX * y[t]
         model += u[t] <= C_MAX * (1 - y[t])
 
+        # --- SOC limits ---
+        model += s[t] >= alpha * b 
+        model += s[t] <= beta * b
+
         # --- SOC dynamics ---
         if t == 0:
-            model += s[t] == soc_init + ETA_C * c[t] - (1 / ETA_D) * u[t]
+            model += s[t] == alpha * b + ETA_C * c[t] - (1 / ETA_D) * u[t]
         else:
             model += s[t] == s[t-1] + ETA_C * c[t] - (1 / ETA_D) * u[t]
 
     # ---- optional: end where you started (prevents horizon dumping) ----
-    model += s[T-1] == soc_init
+    model += s[T-1] == s[0]
 
     # ---- solve ----
+    # solver = pl.HiGHS_CMD(msg=False)
     model.solve(pl.PULP_CBC_CMD(msg=False))
     status = pl.LpStatus[model.status]
     print("Solver status:", status)
+
+    print("Status:", pl.LpStatus[model.status])
+    print("b =", pl.value(b))
+    capex = battery_cost_per_kwh_c * pl.value(b) 
+
+    energy = sum(float(price.iloc[t]) * pl.value(g[t]) for t in range(T))
+    obj = pl.value(model.objective)
+
+    print("Energy term:", energy)
+    print("Capex term:", capex)
+    print("Objective:", obj)
+    print("Energy + Capex:", energy + capex)
 
     # ---- extract solution ----
     result = BatteryDispatchResult(
@@ -92,8 +119,9 @@ def solve_battery_dispatch_pulp(
         charge = [pl.value(c[t]) for t in range(T)],
         discharge = [pl.value(u[t]) for t in range(T)],
         soc = [pl.value(s[t]) for t in range(T)],
-        mode = ["charge" if pl.value(y[t]) > 0.5 else "discharge" for t in range(T)],
+        mode = None, # ["charge" if pl.value(y[t]) > 0.5 else "discharge" for t in range(T)],
         price = price.tolist(),
+        battery_size = pl.value(b),
         total_cost = pl.value(model.objective),
     )
 

@@ -9,7 +9,7 @@ import logging
 
 from src.data_processing import get_usage_data, ElectricityConfig
 from src.pulp_optimiser import solve_battery_dispatch_pulp, BatteryDispatchResult
-from src.cost_calculations import calculate_projections
+from src.cost_calculations import calculate_projections, extend_raw_data
 
 logging.basicConfig(level=logging.INFO)
 
@@ -62,6 +62,8 @@ def main():
     if 'profile_with_battery' not in st.session_state:
         st.session_state.profile_with_battery = None
 
+    if 'investment_duration_years' not in st.session_state:
+        st.session_state.investment_duration_years = 3
     
     # Sidebar for navigation
     st.sidebar.title("Navigation")
@@ -72,12 +74,12 @@ def main():
     elif option == "Raw Data":
         show_raw_data(st.session_state.config)
 
-def calculate_cost_with_battery(optimisation_results, config: ElectricityConfig) -> float:
-    battery_capex = config.BATTERY_SIZE_KWH * config.BATTERY_COST_PER_KWH
-    battery_opex = battery_capex * config.OPEX_PERCENT_OF_CAPEX
-    total_battery_cost = (battery_capex + battery_opex) * (1 + config.TAX_RATE)
+def calculate_cost_with_battery(optimisation_results: BatteryDispatchResult, config: ElectricityConfig) -> float:
     if optimisation_results.total_cost is None:
         return 0.0
+    battery_capex = optimisation_results.battery_size * config.BATTERY_COST_PER_KWH
+    battery_opex = battery_capex * config.OPEX_PERCENT_OF_CAPEX
+    total_battery_cost = (battery_capex + battery_opex) * (1 + config.TAX_RATE)
     return optimisation_results.total_cost + total_battery_cost
 
 def show_cost_modelling(config):
@@ -125,7 +127,7 @@ def show_cost_modelling(config):
     with col3:
         st.subheader("Battery Investment")
         st.session_state.config.BATTERY_COST_PER_KWH = st.number_input(
-            "Battery Cost per kWh (€)", 
+            "Battery Cost per kWh (€/kWh)", 
             value=config.BATTERY_COST_PER_KWH,
             step=10.0
         )
@@ -144,6 +146,12 @@ def show_cost_modelling(config):
             value=config.INFLATION_RATE,
             step=0.01,
             format="%.2f"
+        )
+        st.session_state.investment_duration_years = st.number_input(
+            "Investment Duration (years)", 
+            value=st.session_state.investment_duration_years,
+            step=1,
+            min_value=1
         )
     
     # Additional costs section
@@ -223,14 +231,21 @@ def show_cost_modelling(config):
     
     # Cost calculations (using dummy values for now)
     st.header("Cost Analysis")
-    
-    col_result1, col_result2, col_result3 = st.columns(3)
 
     if st.button("Optimize Costs"):
         with st.spinner("Running optimization. This will take a moment..."):
+
+            # Update the usage by the years specified
+            # st.session_state.usage_data = extend_raw_data(
+            #     st.session_state.usage_data, 
+            #     st.session_state.investment_duration_years,
+            #     config=st.session_state.config
+            # )
+
             st.session_state.optimisation_results : BatteryDispatchResult = solve_battery_dispatch_pulp( # type: ignore
                 price=st.session_state.usage_data['c_variable_and_fixed_per_kwh'],
                 demand=st.session_state.usage_data['scaled_kwh_usage'],
+                years = st.session_state.investment_duration_years,
                 config=st.session_state.config,
             )
 
@@ -238,6 +253,7 @@ def show_cost_modelling(config):
                 st.session_state.optimisation_results.total_cost / 100 * (1 + st.session_state.config.TAX_RATE) # type: ignore
             )   
 
+            # This gives the cost without CAPEX
             st.session_state.usage_data['c_variable_total_cost_with_battery'] = (
                 st.session_state.optimisation_results.grid * 
                 st.session_state.usage_data['c_variable_and_fixed_per_kwh'] * 
@@ -267,37 +283,55 @@ def show_cost_modelling(config):
 
         st.success("Optimization complete!")
 
-    
+    col_result1, col_result2, col_result3, col_result4, col_result5 = st.columns(5)
+
     with col_result1:
         st.metric(
-            label="Original Cost (without optimization)",
-            value=f"€{st.session_state.original_cost:,.0f}",
+            label="Original Flat Rate Cost",
+            value=f"€{st.session_state.usage_data['c_total_flat_cost'].sum()/100 :,.0f}",
+            delta=None
+        )
+
+    with col_result2:
+        st.metric(
+            label="Original Variable Rate Cost",
+            value=f"€{st.session_state.usage_data['c_total_variable_cost'].sum()/100 :,.0f}",
+            delta=None
+        )
+
+    with col_result3:
+        st.metric(
+            label="Optimised battery size (kWh)",
+            value=(
+                f"{st.session_state.optimisation_results.battery_size:,.0f} kWh" 
+                if st.session_state.optimisation_results.battery_size is not None else "N/A"
+            ),
             delta=None
         )
     
-    with col_result2:
+    with col_result4:
         st.metric(
-            label="Optimised Cost (without battery)",
+            label="Optimised vs flat cost (CAPEX & OPEX)",
             value=(
                 f"€{st.session_state.optimisation_results.total_cost:,.0f} €" 
                 if st.session_state.optimisation_results.total_cost is not None else "N/A"
                 )
                 ,
-            delta=(f"{st.session_state.original_cost - st.session_state.optimisation_results.total_cost:,.0f} €"
+            delta=(f"{st.session_state.usage_data['c_total_flat_cost'].sum()/100 - st.session_state.optimisation_results.total_cost:,.0f} €"
                    if st.session_state.optimisation_results.total_cost is not None else "N/A"
                    )
         )
     
-    with col_result3:
+    with col_result5:
         st.metric(
-            label="Cost with Battery (CAPEX + OPEX)",
+            label="Optimised vs. variable cost (CAPEX & OPEX)",
             value=(
-                    f"{st.session_state.optimisation_results_with_battery:,.0f} €"
-                    if st.session_state.optimisation_results_with_battery is not None else "N/A"
+                    f"€{st.session_state.optimisation_results.total_cost:,.0f} €"
+                    if st.session_state.optimisation_results.total_cost is not None else "N/A"
                 ),
             delta=(
-                    f"{st.session_state.original_cost - st.session_state.optimisation_results_with_battery:,.0f} €"
-                    if st.session_state.optimisation_results_with_battery is not None else "N/A"
+                    f"{st.session_state.usage_data['c_total_variable_cost'].sum()/100 - st.session_state.optimisation_results.total_cost:,.0f} €"
+                    if st.session_state.optimisation_results.total_cost is not None else "N/A"
                 )
         )
     
@@ -305,10 +339,10 @@ def show_cost_modelling(config):
     
     # Breakeven graph
     st.header("Breakeven Analysis")
-    fixed_vs_battery_tab, variable_vs_battery_tab = st.tabs(["Fixed Cost vs Battery Optimised", "Variable Cost vs Battery Optimised"])
+    flat_vs_battery_tab, variable_vs_battery_tab = st.tabs(["Flat Cost vs Battery Optimised", "Variable Cost vs Battery Optimised"])
     if st.session_state.breakeven is not None:
         battery_capex = (
-            st.session_state.config.BATTERY_SIZE_KWH * st.session_state.config.BATTERY_COST_PER_KWH * (1 + st.session_state.config.TAX_RATE))
+            st.session_state.optimisation_results.battery_size * st.session_state.config.BATTERY_COST_PER_KWH * (1 + st.session_state.config.TAX_RATE)) # type: ignore
 
         st.session_state.breakeven.loc[:, "c_variable_total_cost_with_battery_cumulative"] = (
             st.session_state.breakeven.loc[:, "c_variable_total_cost_with_battery_cumulative"]
@@ -320,7 +354,7 @@ def show_cost_modelling(config):
         projections["c_total_flat_cost_cumulative"] = projections["c_total_flat_cost_cumulative"]/100
         projections = projections[projections['datetime'] >= '2025-01-01']
 
-        with fixed_vs_battery_tab:
+        with flat_vs_battery_tab:
             breakeven_point = projections[
                     projections.c_total_flat_cost_cumulative >= projections.c_variable_total_cost_with_battery_cumulative
                 ]
