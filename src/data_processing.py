@@ -36,6 +36,11 @@ class ElectricityConfig:
 
     # Other
     INFLATION_RATE: float = 0.02
+    INVESTMENT_DURATION_YEARS: int = 10
+
+    # Gas heating
+    GAS_HEATING_C_PER_KWH: float = 12.0
+    GAS_CONVERSION_RATIO: float = 3.2
 
     @classmethod
     def from_yaml(cls, path: str) -> "ElectricityConfig":
