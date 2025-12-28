@@ -167,7 +167,8 @@ def show_cost_modelling(config):
             "OPEX (% / 100 of CAPEX)", 
             value=config.OPEX_PERCENT_OF_CAPEX ,
             step=0.01,
-            format="%.2f"
+            format="%.2f",
+            disabled=True,
         )
         if st.session_state.config.OPEX_PERCENT_OF_CAPEX is not None:
             st.session_state.config.OPEX_PERCENT_OF_CAPEX = st.session_state.config.OPEX_PERCENT_OF_CAPEX 
@@ -183,7 +184,12 @@ def show_cost_modelling(config):
             "Investment Duration (years)", 
             value=st.session_state.config.INVESTMENT_DURATION_YEARS,
             step=1,
-            min_value=1
+            min_value=1,
+            help=(
+                "Number of years over which to project the cost savings. To speed up calculations, we optimise the battery size over a single year "
+                "using the total cost divided by the number of investment years. The full cost projection is then calculated separately for "
+                "the total number of years."
+            )
         )
     
     # Additional costs section
@@ -420,7 +426,7 @@ def show_cost_modelling(config):
             savings_vs_fixed_perc = "N/A"
 
         st.metric(
-            label="**Savings:** Variable rate with battery vs flat cost (CAPEX & OPEX)",
+            label="**Savings:** Variable rate with battery vs flat cost",
             value=(f"{st.session_state.inflation_adjusted_costs['optimised_inflation_adjusted_vs_flat_cost_delta']:,.0f} €"
                    if st.session_state.inflation_adjusted_costs else "N/A"
                    ),
@@ -429,7 +435,7 @@ def show_cost_modelling(config):
                 if st.session_state.inflation_adjusted_costs else "N/A"
                 )
                 ,
-                help="This shows the difference between the optimized variable cost with battery and the flat rate cost over the investment duration."
+                help="This shows the difference between the optimized variable cost with battery CAPEX included and the flat rate cost over the investment duration."
         )
     
     with col_result2:
@@ -445,7 +451,7 @@ def show_cost_modelling(config):
         else:
             savings_vs_variable_perc = "N/A"
         st.metric(
-            label="**Savings:** Variable rate with battery vs. variable rate alone (CAPEX & OPEX)",
+            label="**Savings:** Variable rate with battery vs. variable rate alone",
             value=(
                     f"{st.session_state.inflation_adjusted_costs['optimised_inflation_adjusted_vs_variable_cost_delta']:,.0f} €"
                     if st.session_state.inflation_adjusted_costs else "N/A"
@@ -454,7 +460,7 @@ def show_cost_modelling(config):
                     f"{savings_vs_variable_perc:,.2%} €"
                     if st.session_state.inflation_adjusted_costs else "N/A"
                 ),
-            help="This shows the difference between the optimized variable cost with battery and the variable rate cost alone over the investment duration."
+            help="This shows the difference between the optimized variable cost with battery CAPEX included and the variable rate cost alone over the investment duration."
         )
     
     st.markdown("---")
