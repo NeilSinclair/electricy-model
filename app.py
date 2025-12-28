@@ -93,6 +93,7 @@ def show_cost_modelling(config):
     st.title("Cost Modelling")
     
     st.header("Configuration Parameters")
+    on = st.toggle("Heat Battery Modelling", value=False)
     
     # Create three columns for better layout
     col1, col2, col3 = st.columns(3)
