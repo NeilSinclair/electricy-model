@@ -106,10 +106,10 @@ def calculate_inflation_adjusted_costs(usage_data: pd.DataFrame, optimisation_re
             ) - optimisation_results.battery_size * config.BATTERY_COST_PER_KWH * (1 + config.TAX_RATE)
         
         optimised_inflation_adjusted_vs_variable_cost_delta = inflation_adjusted_cost(
-            usage_data['c_total_variable_cost'].sum()/100 - optimisation_results.total_cost, 
+            usage_data['c_total_variable_cost'].sum()/100 - usage_data['c_variable_total_cost_without_battery'].sum(), 
             investment_duration_years, 
             config.INFLATION_RATE
-            )
+            ) - optimisation_results.battery_size * config.BATTERY_COST_PER_KWH * (1 + config.TAX_RATE)
         
         return {
             "optimised_inflation_adjusted_cost_without_battery": optimised_inflation_adjusted_cost_without_battery,

@@ -101,7 +101,6 @@ def solve_battery_dispatch_pulp(
     status = pl.LpStatus[model.status]
     print("Solver status:", status)
 
-    print("Status:", pl.LpStatus[model.status])
     print("b =", pl.value(b))
     capex = battery_cost_per_kwh_c * pl.value(b) 
 
@@ -110,7 +109,7 @@ def solve_battery_dispatch_pulp(
 
     print("Energy term with tax:", round(energy * (1 + config.TAX_RATE) / 100, 2))
     print("Capex term with tax:", round(capex * (1 + config.TAX_RATE) / 100, 2))
-    print("Objective:", obj/100)
+    # print("Objective:", obj/100)
     print("Energy + Capex with tax:", round((energy + capex) * (1 + config.TAX_RATE) / 100, 2))
 
     # ---- extract solution ----
