@@ -10,8 +10,7 @@ import yaml
 @dataclass
 class ElectricityConfig:
     # Usage and rates
-    ANNUAL_USAGE: int = 1_000_000
-    BASELINE_USAGE_MWH: int = 200_00
+    SCALE_FACTOR: float = 1.0
     FLAT_RATE_C_PER_KWH: float = 30.0
 
     # Battery parameters
@@ -174,7 +173,7 @@ def calculate_usage_and_price(df_hourly: pd.DataFrame, day_ahead_hourly: pd.Data
     if config is None:
         config = ElectricityConfig.from_yaml("config/config.yaml")
 
-    SCALE_FACTOR = config.ANNUAL_USAGE / config.BASELINE_USAGE_MWH
+    SCALE_FACTOR = config.SCALE_FACTOR
 
     COMBINED_ADDITIONAL_COSTS = config.NETWORK_USAGE + config.ELECTRICITY_TAX + config.ADDITIONAL_COST + config.KONZESSION + config.CHP_SURCHARGE 
 
@@ -206,9 +205,10 @@ def calculate_usage_and_price(df_hourly: pd.DataFrame, day_ahead_hourly: pd.Data
 
     return df_usage_and_price
 
-def get_usage_data():
+def get_usage_data(config: ElectricityConfig | None = None) -> tuple[ElectricityConfig, pd.DataFrame]:
     """Function which loads and processes all necessary data and configuration."""
-    config = ElectricityConfig.from_yaml("config/config.yaml")
+    if config is None:
+        config = ElectricityConfig.from_yaml("config/config.yaml")
     df_hourly = process_heat_energy_profile()
     day_ahead_hourly = process_day_ahead_data(df_hourly)
     df_usage_and_price = calculate_usage_and_price(df_hourly, day_ahead_hourly, config=config)

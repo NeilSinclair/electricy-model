@@ -125,3 +125,103 @@ def solve_battery_dispatch_pulp(
     )
 
     return result
+
+
+
+def solve_battery_dispatch_pulp_fixed_battery(
+    price: pd.Series,
+    demand: pd.Series,
+    years: int = 1,
+    config: ElectricityConfig | None = None,
+) -> BatteryDispatchResult:
+    """Fuction which solves an enery storage optimisation problem using MILP with PuLP.
+    
+    Args:
+        price (obj:`pd.Series`): Series of electricity prices (€/kWh).
+        demand (obj:`pd.Series`): Series of electricity demand (kWh).
+        config (ElectricityConfig | None): Configuration object, if None loads from 'config.yaml
+    
+    Returns:
+        BatteryDispatchResult: Object containing optimisation results.    
+    """
+    
+    if config is None:
+        config = ElectricityConfig.from_yaml("config/config.yaml")
+
+    
+    P_MAX = config.BATTERY_POWER
+    DT=1.0
+    ETA_C=config.BATTERY_INEFFICIENCY_FACTOR
+    ETA_D=config.BATTERY_INEFFICIENCY_FACTOR
+
+    # If SOC_FACTOR is 0.8, batthery charges from 10% to 90% of E_MAX
+    alpha = (1-config.SOC_FACTOR)/2
+    beta = 1 - alpha
+
+    T = len(price)
+    C_MAX = P_MAX * DT
+
+    model = pl.LpProblem("Battery_Arbitrage", pl.LpMinimize)
+
+    # ---- decision variables ----
+    g = pl.LpVariable.dicts("grid", range(T), lowBound=0)
+    c = pl.LpVariable.dicts("charge", range(T), lowBound=0)
+    u = pl.LpVariable.dicts("discharge", range(T), lowBound=0)
+    s = pl.LpVariable.dicts("soc", range(T), lowBound=0)
+
+    # binary: 1 = charging allowed, 0 = discharging allowed
+    y = pl.LpVariable.dicts("is_charging", range(T), cat="Binary")
+
+    # ---- objective: minimise grid cost ----
+    logging.info(f"Battery cost per kWh: {config.BATTERY_COST_PER_KWH}")
+    model += (
+        pl.lpSum(price[t] * g[t] for t in range(T))
+    )
+
+    for t in range(T):
+
+        # --- meet demand (no export) ---
+        model += g[t] + u[t] == demand[t] + c[t]
+
+        # --- power limits ---
+        model += c[t] <= C_MAX * y[t]
+        model += u[t] <= C_MAX * (1 - y[t])
+
+        # --- SOC limits ---
+        model += s[t] >= alpha * config.BATTERY_SIZE_KWH 
+        model += s[t] <= beta * config.BATTERY_SIZE_KWH 
+
+        # --- SOC dynamics ---
+        if t == 0:
+            model += s[t] == alpha * config.BATTERY_SIZE_KWH + ETA_C * c[t] - (1 / ETA_D) * u[t]
+        else:
+            model += s[t] == s[t-1] + ETA_C * c[t] - (1 / ETA_D) * u[t]
+
+    # ---- optional: end where you started (prevents horizon dumping) ----
+    model += s[T-1] == s[0]
+
+    # ---- solve ----
+    # solver = pl.HiGHS_CMD(msg=False)
+    model.solve(pl.PULP_CBC_CMD(msg=False))
+    status = pl.LpStatus[model.status]
+    print("Solver status:", status)
+
+    energy = sum(float(price.iloc[t]) * pl.value(g[t]) for t in range(T))
+    obj = pl.value(model.objective)
+
+    print("Energy term with tax:", round(energy * (1 + config.TAX_RATE) / 100, 2))
+    print(f"fObjective term raw: {obj/100}")
+
+    # ---- extract solution ----
+    result = BatteryDispatchResult(
+        grid = [pl.value(g[t]) for t in range(T)],
+        charge = [pl.value(c[t]) for t in range(T)],
+        discharge = [pl.value(u[t]) for t in range(T)],
+        soc = [pl.value(s[t]) for t in range(T)],
+        mode = ["charge" if pl.value(y[t]) > 0.5 else "discharge" for t in range(T)],
+        price = price.tolist(),
+        battery_size = config.BATTERY_SIZE_KWH,
+        total_cost = pl.value(model.objective),
+    )
+
+    return result

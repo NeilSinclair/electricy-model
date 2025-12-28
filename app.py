@@ -10,7 +10,7 @@ from matplotlib.ticker import FuncFormatter
 import logging
 
 from src.data_processing import get_usage_data, ElectricityConfig
-from src.pulp_optimiser import solve_battery_dispatch_pulp, BatteryDispatchResult
+from src.pulp_optimiser import solve_battery_dispatch_pulp, solve_battery_dispatch_pulp_fixed_battery, BatteryDispatchResult
 from src.cost_calculations import calculate_projections, inflation_adjusted_cost, calculate_inflation_adjusted_costs
 
 logging.basicConfig(level=logging.INFO)
@@ -29,6 +29,14 @@ def load_config():
 def reset_config_to_default():
     return ElectricityConfig()
 
+def reload_data():
+    st.session_state.config.SCALE_FACTOR = st.session_state.scale_factor
+    logging.info(f"Reload triggered, scale factor: {st.session_state.scale_factor}")
+    _, st.session_state.usage_data = get_usage_data(config=st.session_state.config)
+    st.session_state.usage_data = st.session_state.usage_data[st.session_state.usage_data.datetime < '2025-12-01']
+    st.session_state.usage_data['c_variable_total_cost_with_battery'] = 0.0
+
+
 def main():
     st.set_page_config(page_title="Electricity Cost Model", layout="wide")
     if 'usage_data' not in st.session_state:
@@ -43,7 +51,7 @@ def main():
     if 'original_cost' not in st.session_state:
         st.session_state.original_cost = (
             (st.session_state.usage_data['c_variable_and_fixed_per_kwh'] * 
-            st.session_state.usage_data['raw_kwh_usage']).sum() * (1 + st.session_state.config.TAX_RATE) / 100
+            st.session_state.usage_data['scaled_kwh_usage']).sum() * (1 + st.session_state.config.TAX_RATE) / 100
         )
     
     if 'optimisation_results' not in st.session_state:
@@ -71,6 +79,9 @@ def main():
 
     if 'inflation_adjusted_costs' not in st.session_state:
         st.session_state.inflation_adjusted_costs = {}
+
+    if 'fixed_battery_size' not in st.session_state:
+        st.session_state.fixed_battery_size = False
     
     # Sidebar for navigation
     st.sidebar.title("Navigation")
@@ -93,7 +104,8 @@ def show_cost_modelling(config):
     st.title("Cost Modelling")
     
     st.header("Configuration Parameters")
-    on = st.toggle("Heat Battery Modelling", value=False)
+    on = st.toggle("Heat Battery Modelling", value=False, help="Doesn't do anything. Just adds as a reminder to what you're modelling.")
+    st.session_state.fixed_battery_size = st.toggle("Fix Battery Size", value=False, help="Enables you to set the battery size manually rather than optimising it.")
     
     # Create three columns for better layout
     col1, col2, col3 = st.columns(3)
@@ -103,7 +115,20 @@ def show_cost_modelling(config):
         st.session_state.config.SOC_FACTOR = st.number_input(
             "SOC factor (Total usable capacity)", 
             value=config.SOC_FACTOR,
-            step=0.05
+            step=0.05,
+            help=(
+                "The total percent of the battery that can be used. If this is set to 0.8, "
+                "then the battery will charge from 10% to 90% of its total capacity."
+            )
+        )
+        st.number_input(
+            "Scale Factor", 
+            value=config.SCALE_FACTOR,
+            step=0.1,
+            format="%.2f",
+            on_change=reload_data,
+            key="scale_factor",
+            help="Factor to scale the entire energy usage profile by. A value of 1.0 means no scaling, 2.0 means double the usage, etc."
         )
         st.session_state.config.FLAT_RATE_C_PER_KWH = st.number_input(
             "Flat Rate (c/kWh)", 
@@ -146,7 +171,7 @@ def show_cost_modelling(config):
             "Battery Size (kWh)", 
             value=config.BATTERY_SIZE_KWH,
             step=5,
-            disabled=True
+            disabled= not st.session_state.fixed_battery_size,
         )
         st.session_state.config.BATTERY_POWER = st.number_input(
             "Battery Power (kW)", 
@@ -273,13 +298,20 @@ def show_cost_modelling(config):
     if st.button("Optimize Costs"):
         with st.spinner("Running optimization. This will take a moment..."):
 
-            st.session_state.optimisation_results : BatteryDispatchResult = solve_battery_dispatch_pulp( # type: ignore
-                price=st.session_state.usage_data['c_variable_and_fixed_per_kwh'],
-                demand=st.session_state.usage_data['scaled_kwh_usage'],
-                years = st.session_state.investment_duration_years,
-                config=st.session_state.config,
-            )
-
+            if not st.session_state.fixed_battery_size:
+                st.session_state.optimisation_results : BatteryDispatchResult = solve_battery_dispatch_pulp( # type: ignore
+                    price=st.session_state.usage_data['c_variable_and_fixed_per_kwh'],
+                    demand=st.session_state.usage_data['scaled_kwh_usage'],
+                    years = st.session_state.investment_duration_years,
+                    config=st.session_state.config,
+                )
+            else:
+                st.session_state.optimisation_results : BatteryDispatchResult = solve_battery_dispatch_pulp_fixed_battery( # type: ignore
+                    price=st.session_state.usage_data['c_variable_and_fixed_per_kwh'],
+                    demand=st.session_state.usage_data['scaled_kwh_usage'],
+                    years = st.session_state.investment_duration_years,
+                    config=st.session_state.config,
+                )
 
             # Put total cost into €/kWh with tax
             st.session_state.optimisation_results.total_cost = (
@@ -315,7 +347,7 @@ def show_cost_modelling(config):
         st.session_state.profile_with_battery = (
             pd.DataFrame({
                 'datetime': st.session_state.usage_data['datetime'],
-                'raw_kwh_usage': st.session_state.usage_data['raw_kwh_usage'],
+                'scaled_kwh_usage': st.session_state.usage_data['scaled_kwh_usage'],
                 'grid_kwh_usage': st.session_state.optimisation_results.grid,
                 'soc': st.session_state.optimisation_results.soc,
                 'battery_charge_kwh': st.session_state.optimisation_results.charge,
@@ -626,7 +658,7 @@ def show_raw_data(config):
 
     # Calculate average price by hour and month
     hourly_monthly_avg_cost = st.session_state.usage_data.groupby(['hour_of_day', 'month_name'])['c_variable_and_fixed_per_kwh'].mean().reset_index()
-    hourly_monthly_avg_usage = st.session_state.usage_data.groupby(['hour_of_day', 'month_name'])['raw_kwh_usage'].mean().reset_index()
+    hourly_monthly_avg_usage = st.session_state.usage_data.groupby(['hour_of_day', 'month_name'])['scaled_kwh_usage'].mean().reset_index()
 
     # Get unique months in chronological order
     month_order = ['January', 'February', 'March', 'April', 'May', 'June', 
@@ -661,7 +693,7 @@ def show_raw_data(config):
     fig2, ax2 = plt.subplots(figsize=(12, 4))
     for month in months_in_data:
         month_data = hourly_monthly_avg_usage[hourly_monthly_avg_usage['month_name'] == month]
-        ax2.plot(month_data['hour_of_day'], month_data['raw_kwh_usage'], 
+        ax2.plot(month_data['hour_of_day'], month_data['scaled_kwh_usage'], 
                 marker='o', label=month, linewidth=2)
 
     ax2.set_xlabel('Hour of Day')
@@ -713,8 +745,8 @@ def show_raw_data(config):
         fig.add_trace(
             go.Scatter(
                 x=df_usage["hour_of_day"],
-                y=df_usage["raw_kwh_usage"],
-                name=f"{month} – Consumption",
+                y=df_usage["scaled_kwh_usage"],
+                name=f"{month} - Consumption",
                 yaxis="y2",
                 mode="lines+markers",
                 visible=month in selected_months,
@@ -770,7 +802,7 @@ def show_raw_data(config):
                 (st.session_state.profile_with_battery['datetime'].dt.date <= end)]
         )
         # ax3.plot(temp_df['datetime'], temp_df['grid_kwh_usage'], label='Grid Usage')
-        ax3.plot(temp_df['datetime'], temp_df['raw_kwh_usage'], label='Original Grid Usage')
+        ax3.plot(temp_df['datetime'], temp_df['scaled_kwh_usage'], label='Original Grid Usage')
         ax3.plot(
             temp_df['datetime'], 
             temp_df['grid_kwh_usage'], 

@@ -1,9 +1,7 @@
 # Default configuration values for electricity cost modeling
 
 # Usage and rates
-# ANNUAL_USAGE: 20000
-ANNUAL_USAGE: 1000000
-BASELINE_USAGE_MWH: 1000000
+SCALE_FACTOR: 1.0
 FLAT_RATE_C_PER_KWH: 30.0
 
 # Battery parameters
