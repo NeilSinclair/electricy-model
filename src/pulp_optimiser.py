@@ -108,10 +108,10 @@ def solve_battery_dispatch_pulp(
     energy = sum(float(price.iloc[t]) * pl.value(g[t]) for t in range(T))
     obj = pl.value(model.objective)
 
-    print("Energy term with tax:", round(energy * (1 + config.TAX_RATE), 2))
-    print("Capex term with tax:", round(capex * (1 + config.TAX_RATE), 2))
-    print("Objective:", obj)
-    print("Energy + Capex with tax:", round((energy + capex) * (1 + config.TAX_RATE), 2))
+    print("Energy term with tax:", round(energy * (1 + config.TAX_RATE) / 100, 2))
+    print("Capex term with tax:", round(capex * (1 + config.TAX_RATE) / 100, 2))
+    print("Objective:", obj/100)
+    print("Energy + Capex with tax:", round((energy + capex) * (1 + config.TAX_RATE) / 100, 2))
 
     # ---- extract solution ----
     result = BatteryDispatchResult(

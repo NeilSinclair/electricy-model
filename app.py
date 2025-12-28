@@ -3,6 +3,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
+import plotly.graph_objects as go
 from datetime import datetime, timedelta
 from matplotlib.ticker import FuncFormatter
 
@@ -108,6 +109,23 @@ def show_cost_modelling(config):
             value=config.FLAT_RATE_C_PER_KWH,
             step=1.0
         )
+        st.session_state.config.GAS_HEATING_C_PER_KWH = st.number_input(
+            "Gas Heating Cost (c/kWh)", 
+            value=config.GAS_HEATING_C_PER_KWH,
+            step=0.1,
+            format="%.2f",
+            help="Cost of gas heating per kWh."
+        )
+        st.session_state.config.GAS_CONVERSION_RATIO = st.number_input(
+            "Gas Conversion Ratio", 
+            value=config.GAS_CONVERSION_RATIO,
+            step=0.1,
+            format="%.2f",
+            help=(
+                "Conversion ratio from gas to heat energy from electricity. E.g., a value of 3.2 means "
+                "3.2 kWh of gas produces 1 kWh of the heat energy produced by electricity."
+            )
+        )
 
     
     with col2:
@@ -116,17 +134,24 @@ def show_cost_modelling(config):
             "Battery Inefficiency Factor", 
             value=config.BATTERY_INEFFICIENCY_FACTOR,
             step=0.01,
-            format="%.2f"
+            format="%.2f",
+            help=(
+                "Value between 0 and 1 representing the efficiency of charging/discharging the battery. "
+                "A value of 0.9 would mean 90% efficiency for charging and for discharging, leaing to a "
+                "90% * 90% = 81% round-trip efficiency."
+            )
         )
         st.session_state.config.BATTERY_SIZE_KWH = st.number_input(
             "Battery Size (kWh)", 
             value=config.BATTERY_SIZE_KWH,
-            step=5
+            step=5,
+            disabled=True
         )
         st.session_state.config.BATTERY_POWER = st.number_input(
             "Battery Power (kW)", 
             value=config.BATTERY_POWER,
-            step=5
+            step=5,
+            help="Maximum power the battery can charge or discharge at any one time before the efficiency factor is considered."
         )
    
     
@@ -210,7 +235,7 @@ def show_cost_modelling(config):
         st.session_state.config = ElectricityConfig() # resets to default values
         st.rerun()
     
-    if st.button("Save Configuration"):
+    if st.button("Save Configuration", disabled=True):
         with open(f"config/config_{datetime.now().strftime('%Y%m%d_%H%M%S')}.yaml", "w") as f:
             yaml_data = {
                 "ANNUAL_USAGE": st.session_state.config.ANNUAL_USAGE,
@@ -248,18 +273,13 @@ def show_cost_modelling(config):
                 config=st.session_state.config,
             )
 
-            battery_capex = (
-                st.session_state.optimisation_results.battery_size  # type: ignore
-                * st.session_state.config.BATTERY_COST_PER_KWH / 100
-                * (1 + st.session_state.config.TAX_RATE)
-            )
 
             # Put total cost into €/kWh with tax
             st.session_state.optimisation_results.total_cost = (
                 st.session_state.optimisation_results.total_cost / 100 * (1 + st.session_state.config.TAX_RATE) # type: ignore
             )   
 
-            # This gives the cost without CAPEX in €
+            # This gives the cost without CAPEX in €; we already add tax in here
             st.session_state.usage_data['c_variable_total_cost_without_battery'] = (
                 st.session_state.optimisation_results.grid * 
                 st.session_state.usage_data['c_variable_and_fixed_per_kwh'] * 
@@ -268,23 +288,22 @@ def show_cost_modelling(config):
 
             # Put the cost the optimised cost with battery usage into another variable
             st.session_state.usage_data['c_variable_total_cost_with_battery'] = (
-                st.session_state.usage_data['c_variable_total_cost_without_battery'] + battery_capex
+                st.session_state.usage_data['c_variable_total_cost_without_battery'] # + battery_capex
 
             )
-            logging.info(f"Optimised total cost with battery: {st.session_state.usage_data['c_variable_total_cost_with_battery'] }")
 
             # Project this date investment_period years into the future
             st.session_state.breakeven = calculate_projections(
                 st.session_state.usage_data, 
                 st.session_state.optimisation_results.battery_size, # type: ignore
-                config=st.session_state.config
+                config=st.session_state.config,
             )
 
         # When we optimise for the cost whilst also optimising the battery size, this isn't needed 
-        st.session_state.optimisation_results_with_battery = calculate_cost_with_battery(
-            st.session_state.optimisation_results, 
-            st.session_state.config
-        )
+        # st.session_state.optimisation_results_with_battery = calculate_cost_with_battery(
+        #     st.session_state.optimisation_results, 
+        #     st.session_state.config
+        # )
 
         st.session_state.profile_with_battery = (
             pd.DataFrame({
@@ -299,22 +318,22 @@ def show_cost_modelling(config):
 
         st.session_state.inflation_adjusted_costs = calculate_inflation_adjusted_costs(
             usage_data = st.session_state.usage_data, 
-            optimised_total_cost = st.session_state.optimisation_results.total_cost,
+            optimisation_results = st.session_state.optimisation_results,
             investment_duration_years = st.session_state.investment_duration_years, 
             config = st.session_state.config
         )
 
         st.success("Optimization complete!")
 
-    st.write(f"Inflation adjusted cost for {st.session_state.investment_duration_years} years.")
-    col_result1, col_result2, col_result3 = st.columns(3)
+    st.write(f"Inflation adjusted cost for **{st.session_state.investment_duration_years} years**.")
+    col_result1, col_result2 = st.columns(2)
 
     with col_result1:
         st.metric(
             label="Gas Heating Cost",
             value=(f"""
                 {inflation_adjusted_cost(
-                    st.session_state.usage_data['scaled_kwh_usage'].sum() * config.GAS_HEATING_C_PER_KWH * config.GAS_CONVERSION_RATIO / 100,
+                    st.session_state.usage_data['scaled_kwh_usage'].sum() * st.session_state.config.GAS_HEATING_C_PER_KWH * st.session_state.config.GAS_CONVERSION_RATIO / 100 * (1 + st.session_state.config.TAX_RATE),
                     st.session_state.investment_duration_years,
                     st.session_state.config.INFLATION_RATE
                 ):,.0f} €"""
@@ -336,7 +355,8 @@ def show_cost_modelling(config):
             help="This is the inflation adjusted electricity cost for the period based on a flat rate without any energy stored in the battery."
         )
 
-    with col_result3:
+    col_result1, col_result2 = st.columns(2)
+    with col_result1:
         st.metric(
             label="Variable Rate Cost (No Battery)",
             value=(f"""{inflation_adjusted_cost(
@@ -346,9 +366,19 @@ def show_cost_modelling(config):
                 ) :,.0f} €"""
             ),
             delta=None,
-            help="This is the inflation adjuseted variable cost for the period without any energy stored in the battery."
+            help="This is the inflation adjusted variable cost for the period if no battery is purchased and the user simply switches to a variable tarrif"
         )
 
+    with col_result2:
+        st.metric(
+            label="Variable Rate Cost (Incl. Battery CAPEX)",
+            value=(
+                f"{st.session_state.inflation_adjusted_costs['optimised_inflation_adjusted_with_battery_cost']:,.0f} €" 
+                if st.session_state.inflation_adjusted_costs else "N/A"
+            ),
+            delta=None,
+            help="This is the inflation adjusted variable cost for the period with energy stored in the battery."
+        )
 
     col_result1, col_result2 = st.columns(2)
 
@@ -376,28 +406,51 @@ def show_cost_modelling(config):
         
     col_result1, col_result2 = st.columns(2)    
     with col_result1:
+        if st.session_state.inflation_adjusted_costs:
+            savings_vs_fixed_perc = (
+                st.session_state.inflation_adjusted_costs['optimised_inflation_adjusted_vs_flat_cost_delta'] /
+                inflation_adjusted_cost(
+                    st.session_state.usage_data['c_total_flat_cost'].sum()/100, 
+                    st.session_state.investment_duration_years, 
+                    st.session_state.config.INFLATION_RATE
+                    )
+            )
+        else:
+            savings_vs_fixed_perc = "N/A"
+
         st.metric(
-            label="Variable rate with battery vs flat cost (CAPEX & OPEX)",
-            value=(
-                f"{st.session_state.inflation_adjusted_costs['optimised_inflation_adjusted_with_battery_cost']:,.0f} €" 
+            label="**Savings:** Variable rate with battery vs flat cost (CAPEX & OPEX)",
+            value=(f"{st.session_state.inflation_adjusted_costs['optimised_inflation_adjusted_vs_flat_cost_delta']:,.0f} €"
+                   if st.session_state.inflation_adjusted_costs else "N/A"
+                   ),
+            delta=(
+                f"{savings_vs_fixed_perc:,.2%} €" 
                 if st.session_state.inflation_adjusted_costs else "N/A"
                 )
                 ,
-            delta=(f"{st.session_state.inflation_adjusted_costs['optimised_inflation_adjusted_vs_flat_cost_delta']:,.0f} €"
-                   if st.session_state.inflation_adjusted_costs else "N/A"
-                   ),
                 help="This shows the difference between the optimized variable cost with battery and the flat rate cost over the investment duration."
         )
     
     with col_result2:
+        if st.session_state.inflation_adjusted_costs:
+            savings_vs_variable_perc = (
+                st.session_state.inflation_adjusted_costs['optimised_inflation_adjusted_vs_variable_cost_delta'] /
+                inflation_adjusted_cost(
+                    st.session_state.usage_data['c_total_variable_cost'].sum()/100, 
+                    st.session_state.investment_duration_years, 
+                    st.session_state.config.INFLATION_RATE
+                    )
+            )
+        else:
+            savings_vs_variable_perc = "N/A"
         st.metric(
-            label="Variable rate with battery vs. variable rate alone (CAPEX & OPEX)",
+            label="**Savings:** Variable rate with battery vs. variable rate alone (CAPEX & OPEX)",
             value=(
-                    f"{st.session_state.inflation_adjusted_costs['optimised_inflation_adjusted_with_battery_cost']:,.0f} €"
+                    f"{st.session_state.inflation_adjusted_costs['optimised_inflation_adjusted_vs_variable_cost_delta']:,.0f} €"
                     if st.session_state.inflation_adjusted_costs else "N/A"
                 ),
             delta=(
-                    f"{st.session_state.inflation_adjusted_costs['optimised_inflation_adjusted_vs_variable_cost_delta']:,.0f} €"
+                    f"{savings_vs_variable_perc:,.2%} €"
                     if st.session_state.inflation_adjusted_costs else "N/A"
                 ),
             help="This shows the difference between the optimized variable cost with battery and the variable rate cost alone over the investment duration."
@@ -407,68 +460,152 @@ def show_cost_modelling(config):
     
     # Breakeven graph
     st.header("Breakeven Analysis")
-    flat_vs_battery_tab, variable_vs_battery_tab = st.tabs(["Flat Cost vs Battery Optimised", "Variable Cost vs Battery Optimised"])
+    flat_vs_battery_tab, variable_vs_battery_tab = st.tabs(["Flat Cost vs Variable With Battery", "Variable Cost vs Variable With Battery Optimised"])
     if st.session_state.breakeven is not None:
-        battery_capex = (
-            st.session_state.optimisation_results.battery_size # type: ignore
-            * st.session_state.config.BATTERY_COST_PER_KWH 
-            * (1 + st.session_state.config.TAX_RATE)
-            )
 
         projections = st.session_state.breakeven.copy()
-        projections["c_variable_total_cost_with_battery_cumulative"] = projections["c_variable_total_cost_with_battery_cumulative"] / 100
-        projections["c_total_variable_cost_cumulative"] = projections["c_total_variable_cost_cumulative"]
+        projections["c_variable_total_cost_with_battery_cumulative"] = projections["c_variable_total_cost_with_battery_cumulative"] 
+        projections["c_total_variable_cost_cumulative"] = projections["c_total_variable_cost_cumulative"] /100
         projections["c_total_flat_cost_cumulative"] = projections["c_total_flat_cost_cumulative"]/100
         projections = projections[projections['datetime'] >= '2025-01-01']
 
         with flat_vs_battery_tab:
             breakeven_point = projections[
-                    projections.c_total_flat_cost_cumulative >= projections.c_variable_total_cost_with_battery_cumulative
-                ]
+                projections.c_total_flat_cost_cumulative >=
+                projections.c_variable_total_cost_with_battery_cumulative
+            ]
 
+            breakeven_date = None
             if len(breakeven_point) > 0:
-                breakeven_date = breakeven_point.iloc[0]['datetime']
-            
-            fig, ax = plt.subplots(figsize=(10, 6))
-            ax.plot(projections["datetime"], projections["c_total_flat_cost_cumulative"], label='Fixed Without Battery (Cumulative)', linewidth=2)
-            ax.plot(projections["datetime"], projections["c_variable_total_cost_with_battery_cumulative"], label='With Battery (Cumulative)', linewidth=2)
-            
-            if len(breakeven_point) > 0:
-                ax.axvline(x=breakeven_date, color='red', linestyle='--', label=f'Breakeven Point ({breakeven_date.date()})')
+                breakeven_date = breakeven_point.iloc[0]["datetime"]
 
-            ax.set_xlabel('Years', fontsize=12)
-            ax.set_ylabel('Cumulative Cost (€)', fontsize=12)
-            ax.yaxis.set_major_formatter(
-                FuncFormatter(lambda x, _: f"{x:,.0f}€")
+            fig = go.Figure()
+
+            fig.add_trace(
+                go.Scatter(
+                    x=projections["datetime"],
+                    y=projections["c_total_flat_cost_cumulative"],
+                    mode="lines",
+                    name="Fixed Cost Without Battery (Cumulative)",
+                    hovertemplate="%{x|%Y-%m-%d}<br>%{y:,.0f}€<extra></extra>",
+                    line=dict(width=2),
+                )
             )
-            ax.set_title('Breakeven Analysis: Fixed Rate vs Battery Investment', fontsize=14, fontweight='bold')
-            ax.legend()
-            ax.grid(True, alpha=0.3)
-            
-            st.pyplot(fig)
+
+            fig.add_trace(
+                go.Scatter(
+                    x=projections["datetime"],
+                    y=projections["c_variable_total_cost_with_battery_cumulative"],
+                    mode="lines",
+                    name="Variable Cost With Battery (Cumulative)",
+                    hovertemplate="%{x|%Y-%m-%d}<br>%{y:,.0f}€<extra></extra>",
+                    line=dict(width=2),
+                )
+            )
+
+            if breakeven_date is not None:
+                fig.add_vline(
+                    x=breakeven_date.to_pydatetime(),
+                    line_width=2,
+                    line_dash="dash",
+                    line_color="red",
+                )
+
+                fig.add_annotation(
+                    x=breakeven_date.to_pydatetime(),
+                    y=1,
+                    yref="paper",
+                    text=f"Breakeven ({breakeven_date.date()})",
+                    showarrow=False,
+                    xanchor="left",
+                    font=dict(color="red"),
+                )
+
+            fig.update_layout(
+                title="Fixed Rate vs Variable Rate with Battery Investment",
+                xaxis_title="Year",
+                yaxis_title="Cumulative Cost (€)",
+                yaxis_tickformat=",",
+                hovermode="x unified",
+                template="simple_white",
+                legend=dict(
+                    x=0.98,
+                    y=0.02,
+                    xanchor="right",
+                    yanchor="bottom",
+                )
+            )
+
+            st.plotly_chart(fig, width="stretch")
 
         with variable_vs_battery_tab:
             breakeven_point = projections[
-                projections.c_total_variable_cost_cumulative >= projections.c_variable_total_cost_with_battery_cumulative
+                projections.c_total_variable_cost_cumulative >=
+                projections.c_variable_total_cost_with_battery_cumulative
             ]
 
+            breakeven_date = None
             if len(breakeven_point) > 0:
-                breakeven_date = breakeven_point.iloc[0]['datetime']
-            
-            fig, ax = plt.subplots(figsize=(10, 6))
-            ax.plot(projections["datetime"], projections["c_total_variable_cost_cumulative"], label='Without Battery (Cumulative)', linewidth=2)
-            ax.plot(projections["datetime"], projections["c_variable_total_cost_with_battery_cumulative"], label='With Battery (Cumulative)', linewidth=2)
-            
-            if len(breakeven_point) > 0:
-                ax.axvline(x=breakeven_date, color='red', linestyle='--', label=f'Breakeven Point ({breakeven_date.date()})')
+                breakeven_date = breakeven_point.iloc[0]["datetime"]
 
-            ax.set_xlabel('Years', fontsize=12)
-            ax.set_ylabel('Cumulative Cost (€)', fontsize=12)
-            ax.set_title('Breakeven Analysis: Variable Rate vs Battery Investment', fontsize=14, fontweight='bold')
-            ax.legend()
-            ax.grid(True, alpha=0.3)
-            
-            st.pyplot(fig)
+            fig = go.Figure()
+
+            fig.add_trace(
+                go.Scatter(
+                    x=projections["datetime"],
+                    y=projections["c_total_variable_cost_cumulative"],
+                    mode="lines",
+                    name="Variable Cost Without Battery (Cumulative)",
+                    hovertemplate="%{x|%Y-%m-%d}<br>%{y:,.0f}€<extra></extra>",
+                    line=dict(width=2),
+                )
+            )
+
+            fig.add_trace(
+                go.Scatter(
+                    x=projections["datetime"],
+                    y=projections["c_variable_total_cost_with_battery_cumulative"],
+                    mode="lines",
+                    name="Variable Cost With Battery (Cumulative)",
+                    hovertemplate="%{x|%Y-%m-%d}<br>%{y:,.0f}€<extra></extra>",
+                    line=dict(width=2),
+                )
+            )
+
+            if breakeven_date is not None:
+                fig.add_vline(
+                    x=breakeven_date.to_pydatetime(),
+                    line_width=2,
+                    line_dash="dash",
+                    line_color="red",
+                )
+
+                fig.add_annotation(
+                    x=breakeven_date.to_pydatetime(),
+                    y=1,
+                    yref="paper",
+                    text=f"Breakeven ({breakeven_date.date()})",
+                    showarrow=False,
+                    xanchor="left",
+                    font=dict(color="red"),
+                )
+
+            fig.update_layout(
+                title="Variable Rate: No Battery vs Battery Investment",
+                xaxis_title="Year",
+                yaxis_title="Cumulative Cost (€)",
+                yaxis_tickformat=",",
+                hovermode="x unified",
+                template="simple_white",
+                legend=dict(
+                    x=0.98,
+                    y=0.02,
+                    xanchor="right",
+                    yanchor="bottom",
+                )
+            )
+
+            st.plotly_chart(fig, width="stretch")
 
 def show_raw_data(config):
     st.title("Raw Data Analysis")
@@ -530,10 +667,89 @@ def show_raw_data(config):
     st.pyplot(fig2)
     
     st.markdown("---")
+    st.write("3. Combined electricity price and consumption patterns.")
+
+    selected_months = st.multiselect(
+        "Select months to display",
+        options=months_in_data,
+        default="January",
+        help="Select which months you want to look at in the combined graph. By default, only January is shown, but you can select multiple months to compare."
+    )
+
+    fig = go.Figure()
+
+    # --- Price traces (left y-axis)
+    for month in months_in_data:
+        df_price = hourly_monthly_avg_cost[
+            hourly_monthly_avg_cost["month_name"] == month
+        ]
+
+        fig.add_trace(
+            go.Scatter(
+                x=df_price["hour_of_day"],
+                y=df_price["c_variable_and_fixed_per_kwh"],
+                name=f"{month} - Price",
+                yaxis="y1",
+                mode="lines+markers",
+                line=dict(dash="dash", width=2),
+                visible=month in selected_months,
+                hovertemplate="Hour %{x}<br>%{y:.2f} c€/kWh<extra></extra>",
+            )
+        )
+
+    # --- Consumption traces (right y-axis)
+    for month in months_in_data:
+        df_usage = hourly_monthly_avg_usage[
+            hourly_monthly_avg_usage["month_name"] == month
+        ]
+
+        fig.add_trace(
+            go.Scatter(
+                x=df_usage["hour_of_day"],
+                y=df_usage["raw_kwh_usage"],
+                name=f"{month} – Consumption",
+                yaxis="y2",
+                mode="lines+markers",
+                visible=month in selected_months,
+                hovertemplate="Hour %{x}<br>%{y:.2f} kWh<extra></extra>",
+            )
+        )
+
+    # --- Layout
+    fig.update_layout(
+        title="Hourly Electricity Price & Consumption by Month",
+        xaxis=dict(
+            title="Hour of Day",
+            tickmode="linear",
+            tick0=0,
+            dtick=1,
+        ),
+        yaxis=dict(
+            title="Average Price [c€/kWh]",
+            side="left",
+        ),
+        yaxis2=dict(
+            title="Average Consumption [kWh]",
+            overlaying="y",
+            side="right",
+        ),
+        hovermode="x unified",
+        template="simple_white",
+        legend=dict(
+            x=1.02,
+            y=1,
+            xanchor="left",
+            yanchor="top",
+        ),
+    )
+
+    st.plotly_chart(fig, width="stretch")
+    
+    st.markdown("---")
     
     # Graph 3
     if st.session_state.profile_with_battery is not None:
-        st.subheader("3. Energy Profile with Battery Optimization")
+        st.subheader("4. Energy Profile with Battery Optimization")
         st.write("This graph shows the updated energy profile with battery optimization applied, comparing original and new grid usage.")
 
         start = st.date_input("Start date: yyyy/mm/dd", datetime(2025, 1, 1))

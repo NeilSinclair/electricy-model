@@ -26,7 +26,7 @@ class ElectricityConfig:
     CHP_SURCHARGE: float = 0.45
 
     # Battery investment
-    BATTERY_COST_PER_KWH: float = 300.0
+    BATTERY_COST_PER_KWH: float = 200.0
     OPEX_PERCENT_OF_CAPEX: float = 0.05
 
     # Battery size
