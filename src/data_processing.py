@@ -30,7 +30,7 @@ class ElectricityConfig:
 
     # Heat Pump parameters
     HEAT_PUMP_COP: float = 3.5
-    HEAT_PUMP_COST_PER_KW: float = 50.0
+    HEAT_PUMP_COST_PER_KW: float = 1800.0
     HEAT_PUMP_SIZE_KW: float = 100.0
     HEAT_PUMP_OUTPUT_KW: float = 50.0 
 
@@ -54,86 +54,11 @@ class ElectricityConfig:
 
         return cls(**data)
 
-def process_hourly_energy_profile(start_date: str = "2025-01-01 00:00", end_date: str = "2025-12-31 23:45") -> pd.DataFrame:
-    """Function which takes raw energy profile data and converts it to hourly usage"""
-    data = pd.read_excel("data/energy_profile.xlsx", header=2)
-    data.drop(columns=["Unnamed: 0"], inplace=True)
-
-    months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
-    data_types = ["SA", "FT", "WT"]
-    new_months = []
-    for month in months:
-        for data_type in data_types:
-            new_months.append(month+"_"+data_type)
-
-    data.columns = ["Time"] + new_months
-    data.drop(index=0, inplace=True)
-    data.dropna(axis=0,subset=["Time"], inplace=True)
-
-    data = data.melt(id_vars="Time")
-
-    data.columns = ["Time Period", "Date", "value"]
-    data["month_name"] = data.Date.apply(lambda x: x.split("_")[0])
-    data["day_type"] = data.Date.apply(lambda x: x.split("_")[1])
-    data["time"] = data["Time Period"].apply(lambda x: x.split("-")[0])
-    data["time"] = pd.to_datetime(data["time"], format="%H:%M").dt.time
-
-    data.drop(columns=["Date", "Time Period"], inplace=True)
-
-    day_map = {
-    "Monday": "WT",
-    "Tuesday": "WT",
-    "Wednesday": "WT",
-    "Thursday": "WT",
-    "Friday": "WT",
-    "Saturday": "SA",
-    "Sunday": "FT"
-    }
-
-    de_holidays = holidays.Germany(years=[2025,2024])
-
-    # 1. Create all 15-minute timestamps for 2025
-    dt_index = pd.date_range(
-        start=start_date,
-        end=end_date,   # last 15-minute slot of the year
-        freq="15min"
-    )
-
-    df = pd.DataFrame({"datetime": dt_index})
-
-    # 2. Add date, time, weekday name
-    df["date"] = df["datetime"].dt.date
-    df["time"] = df["datetime"].dt.time
-    df["weekday"] = df["datetime"].dt.day_name() 
-    df["month_name"] = df["datetime"].dt.month_name()
-    # df["weekday"] = df["datetime"].dt.day_name(locale="de_DE")  # if you have locale set up
-    # Name of holiday (or None)
-    df["holiday_name"] = df["datetime"].dt.date.map(de_holidays.get)
-
-    # Boolean flag for “is public holiday?”
-    df["is_holiday"] = df["holiday_name"].notna()
-    df["day_type"] = df["weekday"].map(day_map)
-    df.loc[df["is_holiday"], "day_type"] = "FT"
-
-    pd.set_option("display.max_rows", 10)
-
-    df = df.merge(
-        data,
-        on = ["month_name", "day_type", "time"],
-        how="left"
-    )#.drop(columns=["day_type", "time", "date", "holiday_name", "is_holiday"])
-
-    df = df.set_index("datetime")
-
-    df_hourly = pd.DataFrame(df.resample("h")["value"].mean()).reset_index()
-
-    return df_hourly
-
 def process_heat_energy_profile(data_path: str = 'data/heat_data.csv') -> pd.DataFrame:
     """Function which processes raw heat energy profile data and merges with hourly energy profile"""
     heat_data_hourly = pd.read_csv(data_path, sep=';')
     heat_data_hourly["Timestamp"] = pd.to_datetime(heat_data_hourly["Timestamp"], unit="s", utc=True)
-    heat_data_hourly["Timestamp"] = heat_data_hourly["Timestamp"].dt.tz_convert(None)
+    heat_data_hourly["Timestamp"] = heat_data_hourly["Timestamp"].dt.tz_convert(None) # type: ignore
 
     heat_data_hourly = heat_data_hourly.rename(columns={"Timestamp": "datetime", "Heat demand kWh (heat)": "value"})
     heat_data_hourly["value"] = heat_data_hourly["value"].str.replace(',', '.')
@@ -143,7 +68,10 @@ def process_heat_energy_profile(data_path: str = 'data/heat_data.csv') -> pd.Dat
     return heat_data_hourly
 
 def process_day_ahead_data(df_hourly: pd.DataFrame, data_path: str = 'data/day_ahead_1yr.csv') -> pd.DataFrame:
-    """Function which processes raw day-ahead price data and merges with hourly energy profile"""
+    """Function which processes raw day-ahead price data and merges with hourly energy profile
+    
+    The source of this data is ... 
+    """
     day_ahead = pd.read_csv(data_path, sep=";")
 
     day_ahead = day_ahead[["Start date", "End date", "Germany/Luxembourg [€/MWh] Original resolutions", "∅ DE/LU neighbours [€/MWh] Original resolutions"]]
@@ -188,9 +116,9 @@ def calculate_usage_and_price(df_hourly: pd.DataFrame, day_ahead_hourly: pd.Data
         how="left"
     ).rename(columns={"de_price": "c_per_kwh_variable", "value": "raw_kwh_usage"})
 
-    df_usage_and_price['month'] = df_usage_and_price['datetime'].dt.month
-    df_usage_and_price['month_name'] = df_usage_and_price['datetime'].dt.strftime('%B')
-    df_usage_and_price['hour_of_day'] = df_usage_and_price['datetime'].dt.hour
+    df_usage_and_price['month'] = df_usage_and_price['datetime'].dt.month # type: ignore
+    df_usage_and_price['month_name'] = df_usage_and_price['datetime'].dt.strftime('%B')  # type: ignore
+    df_usage_and_price['hour_of_day'] = df_usage_and_price['datetime'].dt.hour  # type: ignore
 
     df_usage_and_price["c_per_kwh_variable"] = df_usage_and_price["c_per_kwh_variable"] / 10 # Convert €/MWh to c€/kWh
 
@@ -202,11 +130,11 @@ def calculate_usage_and_price(df_hourly: pd.DataFrame, day_ahead_hourly: pd.Data
     df_usage_and_price["c_variable_and_fixed_per_kwh"] = df_usage_and_price["c_per_kwh_variable"] + df_usage_and_price["c_fixed_costs_kwh"]
 
     df_usage_and_price["c_total_variable_cost"] = (
-        (df_usage_and_price["scaled_kwh_usage"] / config.HEAT_PUMP_COP * (df_usage_and_price["c_variable_and_fixed_per_kwh"])) * (1 + config.TAX_RATE)
+        (df_usage_and_price["scaled_kwh_usage"] / config.HEAT_PUMP_COP * (df_usage_and_price["c_variable_and_fixed_per_kwh"])) 
     )
 
     df_usage_and_price["c_per_kwh_flat_rate_cost"] = config.FLAT_RATE_C_PER_KWH
-    df_usage_and_price["c_total_flat_cost"] = (df_usage_and_price["c_per_kwh_flat_rate_cost"] * df_usage_and_price["scaled_kwh_usage"] / config.HEAT_PUMP_COP) * (1+config.TAX_RATE)
+    df_usage_and_price["c_total_flat_cost"] = (df_usage_and_price["c_per_kwh_flat_rate_cost"] * df_usage_and_price["scaled_kwh_usage"] / config.HEAT_PUMP_COP)
 
     return df_usage_and_price
 

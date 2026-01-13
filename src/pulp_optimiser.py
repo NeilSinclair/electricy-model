@@ -35,7 +35,7 @@ def solve_tes_dispatch_pulp(
     Returns:
         BatteryDispatchResult: Object containing optimisation results.    
     """
-    
+    print(f"Solving TES with optimised battery size and heat pump size.")
     if config is None:
         config = ElectricityConfig.from_yaml("config/config.yaml")
 
@@ -52,7 +52,7 @@ def solve_tes_dispatch_pulp(
     charge = pl.LpVariable.dicts("charge", range(T), lowBound=0)
     discharge = pl.LpVariable.dicts("discharge", range(T), lowBound=0)
     soc = pl.LpVariable.dicts("soc", range(T), lowBound=0)
-    tes_size = pl.LpVariable("tes_size", lowBound=0, upBound=300, cat=pl.LpContinuous)
+    tes_size = pl.LpVariable("tes_size", lowBound=0, upBound=500, cat=pl.LpContinuous)
     heat_pump_size = pl.LpVariable("heat_pump_size", lowBound=0, upBound=300, cat=pl.LpContinuous)
 
     # binary: 1 = charging allowed, 0 = discharging allowed
@@ -102,18 +102,18 @@ def solve_tes_dispatch_pulp(
     print("Solver status:", status)
 
     print("TES Size =", pl.value(tes_size))
-    print(f"TES Capex: {round(pl.value(tes_size) * config.TES_COST_PER_KWH * (1 + config.TAX_RATE)):,.0f} €") # type: ignore
+    print(f"TES Capex: {round(pl.value(tes_size) * config.TES_COST_PER_KWH ):,.0f} €") # type: ignore
     print(f"Heat Pump Size {pl.value(heat_pump_size):.1f} kW")
-    print(f"Heat Pump Capex: {round(pl.value(heat_pump_size) * config.HEAT_PUMP_COST_PER_KW * (1 + config.TAX_RATE)):,.0f} €") # type: ignore
+    print(f"Heat Pump Capex: {round(pl.value(heat_pump_size) * config.HEAT_PUMP_COST_PER_KW ):,.0f} €") # type: ignore
     capex = (config.TES_COST_PER_KWH * pl.value(tes_size) + config.HEAT_PUMP_COST_PER_KW  * pl.value(heat_pump_size)) # type: ignore
 
     energy = sum(float(price.iloc[t]) * pl.value(grid[t]) for t in range(T))
 
-    print(f"Energy term with tax for {years} years: {energy * years * (1 + config.TAX_RATE) / 100:,.0f} €")
-    print(f"Capex term with tax over {years} years: {capex * (1 + config.TAX_RATE):,.0f} €")
-    print(f"Energy + Capex with tax: {((energy * years / 100) + capex) * (1 + config.TAX_RATE):,.0f} €")
+    print(f"Energy term with tax for {years} years: {energy * years  / 100:,.0f} €")
+    print(f"Capex term with tax over {years} years: {capex :,.0f} €")
+    print(f"Energy + Capex with tax: {((energy * years / 100) + capex) :,.0f} €")
     print(f"Objective term raw: {pl.value(model.objective)/100:,.0f} €")
-    print(f"Objective term raw over {years} years with tax: {pl.value(model.objective) * (1 + config.TAX_RATE) / 100:,.0f} €")
+    print(f"Objective term raw over {years} years with tax: {pl.value(model.objective)  / 100:,.0f} €")
 
     # ---- extract solution ----
     result = BatteryDispatchResult(
@@ -152,6 +152,7 @@ def solve_tes_dispatch_pulp_fixed_battery(
     if config is None:
         config = ElectricityConfig.from_yaml("config/config.yaml")
 
+    print(f"Solving TES with a fixed battery size of {config.TES_SIZE_KWH} kWh and heat pump size of {config.HEAT_PUMP_SIZE_KW} kW")
     # The battery cost needs to be in the same units (c) as the price series
     TES_COST_PER_KWH_c = config.TES_COST_PER_KWH * 100 / years
     HEAT_PUMP_COST_PER_KW_c = config.HEAT_PUMP_COST_PER_KW * 100 / years
@@ -211,17 +212,17 @@ def solve_tes_dispatch_pulp_fixed_battery(
     print("Solver status:", status)
 
     print("TES Size =", config.TES_SIZE_KWH)
-    print(f"TES Capex: {round(config.TES_SIZE_KWH * config.TES_COST_PER_KWH * (1 + config.TAX_RATE)):,.0f} €") # type: ignore
+    print(f"TES Capex: {round(config.TES_SIZE_KWH * config.TES_COST_PER_KWH ):,.0f} €") # type: ignore
     print(f"Heat Pump Size {config.HEAT_PUMP_SIZE_KW:.1f} kW")
-    print(f"Heat Pump Capex: {round(config.HEAT_PUMP_SIZE_KW * config.HEAT_PUMP_COST_PER_KW * (1 + config.TAX_RATE)):,.0f} €") # type: ignore
+    print(f"Heat Pump Capex: {round(config.HEAT_PUMP_SIZE_KW * config.HEAT_PUMP_COST_PER_KW ):,.0f} €") # type: ignore
     capex = (config.TES_COST_PER_KWH * config.TES_SIZE_KWH + config.HEAT_PUMP_COST_PER_KW  * config.HEAT_PUMP_SIZE_KW) # type: ignore
     energy = sum(float(price.iloc[t]) * pl.value(grid[t]) for t in range(T))
 
-    print(f"Energy term with tax for {years} years: {energy * years * (1 + config.TAX_RATE) / 100:,.0f} €")
-    print(f"Capex term with tax over {years} years: {capex * (1 + config.TAX_RATE):,.0f} €")
-    print(f"Energy + Capex with tax: {((energy * years / 100) + capex) * (1 + config.TAX_RATE):,.0f} €")
+    print(f"Energy term with tax for {years} years: {energy * years  / 100:,.0f} €")
+    print(f"Capex term with tax over {years} years: {capex :,.0f} €")
+    print(f"Energy + Capex with tax: {((energy * years / 100) + capex) :,.0f} €")
     print(f"Objective term raw: {pl.value(model.objective)/100:,.0f} €")
-    print(f"Objective term raw over {years} years with tax: {pl.value(model.objective) * (1 + config.TAX_RATE) / 100:,.0f} €")
+    print(f"Objective term raw over {years} years with tax: {pl.value(model.objective)  / 100:,.0f} €")
 
     # ---- extract solution ----
     result = BatteryDispatchResult(

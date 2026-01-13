@@ -3,13 +3,14 @@ from src.data_processing import ElectricityConfig
 from src.pulp_optimiser import BatteryDispatchResult
 
 
-def calculate_projections(usage_df: pd.DataFrame, tes_size: float, config: ElectricityConfig | None = None) -> pd.DataFrame:
+def calculate_projections(usage_df: pd.DataFrame, tes_size: float, heat_pump_size: float, config: ElectricityConfig | None = None) -> pd.DataFrame:
     """Calculate breakeven analysis based on usage data and configuration.
 
     Args:
         usage_df (pd.DataFrame): DataFrame containing electricity usage data.
         tes_size (float): Size of the TES in kWh.
-        config (ElectricityConfig | None): Configuration object, if None loads from 'config.yaml'.
+        heat_pump_size (float): Size of the heat pump in kW.
+        config (ElectricityConfig | None): Configuration parameters. If None, loads from 'config.yaml'.
 
     Returns:
         pd.DataFrame: DataFrame containing breakeven analysis results.
@@ -23,7 +24,11 @@ def calculate_projections(usage_df: pd.DataFrame, tes_size: float, config: Elect
             "c_total_flat_cost": "sum"
     }).reset_index()    
 
-    tes_capex = tes_size * config.TES_COST_PER_KWH  * (1 + config.TAX_RATE)
+
+    tes_capex_opti = tes_size * config.TES_COST_PER_KWH  
+    heat_pump_capex_opti = heat_pump_size * config.HEAT_PUMP_COST_PER_KW
+    tes_capex_default = config.TES_SIZE_KWH * config.TES_COST_PER_KWH  
+    heat_pump_capex_default = config.HEAT_PUMP_SIZE_KW * config.HEAT_PUMP_COST_PER_KW
 
     dt_index = pd.date_range(
         start=monthly_costs["datetime"].min(),
@@ -55,14 +60,14 @@ def calculate_projections(usage_df: pd.DataFrame, tes_size: float, config: Elect
             
             # Add in the battery opex spread over the year; note the tax was added the c_variable_total_cost_with_battery before
             monthly_costs_extended.loc[monthly_costs_extended["datetime"] == next_year, "c_variable_total_cost_without_battery"] = (
-                (current_optimised_cost * (1 + config.INFLATION_RATE)) + ((tes_capex / 365 * config.OPEX_PERCENT_OF_CAPEX) * (1 + config.INFLATION_RATE))
+                (current_optimised_cost * (1 + config.INFLATION_RATE)) + ((tes_capex_opti / 365 * config.OPEX_PERCENT_OF_CAPEX) * (1 + config.INFLATION_RATE))
             )
             # Tax was added when this data was initially processed
             monthly_costs_extended.loc[monthly_costs_extended["datetime"] == next_year, "c_total_flat_cost"] = current_fixed_cost * (1 + config.INFLATION_RATE)
 
-    monthly_costs_extended["c_total_variable_cost_cumulative"] = monthly_costs_extended["c_total_variable_cost"].cumsum()
-    monthly_costs_extended["c_variable_total_cost_with_battery_cumulative"] = monthly_costs_extended["c_variable_total_cost_without_battery"].cumsum() + tes_capex
-    monthly_costs_extended["c_total_flat_cost_cumulative"] = monthly_costs_extended["c_total_flat_cost"].cumsum()
+    monthly_costs_extended["c_total_variable_cost_cumulative"] = monthly_costs_extended["c_total_variable_cost"].cumsum() + ((tes_capex_default + heat_pump_capex_default) * 100)
+    monthly_costs_extended["c_variable_total_cost_with_battery_cumulative"] = (monthly_costs_extended["c_variable_total_cost_without_battery"].cumsum() + tes_capex_opti + heat_pump_capex_opti) * 100
+    monthly_costs_extended["c_total_flat_cost_cumulative"] = monthly_costs_extended["c_total_flat_cost"].cumsum() + ((tes_capex_default + heat_pump_capex_default) * 100)
 
     return monthly_costs_extended
 
@@ -95,7 +100,10 @@ def calculate_inflation_adjusted_costs(usage_data: pd.DataFrame, optimisation_re
 
         # To calculate this, we need to tkae the usage cost excluding battery CAPEX and then add the CAPEX in separately at the end
         optimised_inflation_adjusted_with_battery_cost = (
-             optimised_inflation_adjusted_cost_without_battery + optimisation_results.tes_size * config.TES_COST_PER_KWH * (1 + config.TAX_RATE)
+            optimised_inflation_adjusted_cost_without_battery + 
+            ((optimisation_results.tes_size * config.TES_COST_PER_KWH +   # type: ignore
+            optimisation_results.heat_pump_size * config.HEAT_PUMP_COST_PER_KW) # type: ignore
+             )
         )
         
         # Take the difference between flat cost and variable cost with battery and then add the CAPEX at the end
@@ -103,13 +111,15 @@ def calculate_inflation_adjusted_costs(usage_data: pd.DataFrame, optimisation_re
             usage_data['c_total_flat_cost'].sum()/100 - usage_data['c_variable_total_cost_without_battery'].sum(), 
             investment_duration_years, 
             config.INFLATION_RATE
-            ) - optimisation_results.tes_size * config.TES_COST_PER_KWH * (1 + config.TAX_RATE)
+            ) + ((config.TES_SIZE_KWH - optimisation_results.tes_size) * config.TES_COST_PER_KWH + (config.HEAT_PUMP_SIZE_KW - optimisation_results.heat_pump_size) * config.HEAT_PUMP_COST_PER_KW)  # type: ignore
         
+        
+        # The difference here is also the difference between the optimised battery and heat pump cost
         optimised_inflation_adjusted_vs_variable_cost_delta = inflation_adjusted_cost(
             usage_data['c_total_variable_cost'].sum()/100 - usage_data['c_variable_total_cost_without_battery'].sum(), 
             investment_duration_years, 
             config.INFLATION_RATE
-            ) - optimisation_results.tes_size * config.TES_COST_PER_KWH * (1 + config.TAX_RATE)
+            ) + ((config.TES_SIZE_KWH - optimisation_results.tes_size) * config.TES_COST_PER_KWH + (config.HEAT_PUMP_SIZE_KW - optimisation_results.heat_pump_size) * config.HEAT_PUMP_COST_PER_KW)  # type: ignore
         
         return {
             "optimised_inflation_adjusted_cost_without_battery": optimised_inflation_adjusted_cost_without_battery,
