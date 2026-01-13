@@ -25,13 +25,18 @@ class ElectricityConfig:
     CHP_SURCHARGE: float = 0.45
 
     # Battery investment
-    BATTERY_COST_PER_KWH: float = 200.0
+    TES_COST_PER_KWH: float = 200.0
     OPEX_PERCENT_OF_CAPEX: float = 0.05
 
+    # Heat Pump parameters
+    HEAT_PUMP_COP: float = 3.5
+    HEAT_PUMP_COST_PER_KW: float = 50.0
+    HEAT_PUMP_SIZE_KW: float = 100.0
+    HEAT_PUMP_OUTPUT_KW: float = 50.0 
+
     # Battery size
-    BATTERY_SIZE_KWH: int = 120
-    BATTERY_POWER: int = 50
-    SOC_FACTOR: float = 0.8
+    TES_SIZE_KWH: float = 120.0
+    TES_POWER: float = 50.0
 
     # Other
     INFLATION_RATE: float = 0.02
@@ -130,7 +135,7 @@ def process_heat_energy_profile(data_path: str = 'data/heat_data.csv') -> pd.Dat
     heat_data_hourly["Timestamp"] = pd.to_datetime(heat_data_hourly["Timestamp"], unit="s", utc=True)
     heat_data_hourly["Timestamp"] = heat_data_hourly["Timestamp"].dt.tz_convert(None)
 
-    heat_data_hourly = heat_data_hourly.rename(columns={"Timestamp": "datetime", "Heat Pump Demand kWh (electrical)": "value"})
+    heat_data_hourly = heat_data_hourly.rename(columns={"Timestamp": "datetime", "Heat demand kWh (heat)": "value"})
     heat_data_hourly["value"] = heat_data_hourly["value"].str.replace(',', '.')
     heat_data_hourly = heat_data_hourly.astype({'value': 'float'})
     heat_data_hourly = heat_data_hourly[['datetime', 'value']]
@@ -197,11 +202,11 @@ def calculate_usage_and_price(df_hourly: pd.DataFrame, day_ahead_hourly: pd.Data
     df_usage_and_price["c_variable_and_fixed_per_kwh"] = df_usage_and_price["c_per_kwh_variable"] + df_usage_and_price["c_fixed_costs_kwh"]
 
     df_usage_and_price["c_total_variable_cost"] = (
-        (df_usage_and_price["scaled_kwh_usage"] * (df_usage_and_price["c_variable_and_fixed_per_kwh"])) * (1 + config.TAX_RATE)
+        (df_usage_and_price["scaled_kwh_usage"] / config.HEAT_PUMP_COP * (df_usage_and_price["c_variable_and_fixed_per_kwh"])) * (1 + config.TAX_RATE)
     )
 
     df_usage_and_price["c_per_kwh_flat_rate_cost"] = config.FLAT_RATE_C_PER_KWH
-    df_usage_and_price["c_total_flat_cost"] = (df_usage_and_price["c_per_kwh_flat_rate_cost"] * df_usage_and_price["scaled_kwh_usage"]) * (1+config.TAX_RATE)
+    df_usage_and_price["c_total_flat_cost"] = (df_usage_and_price["c_per_kwh_flat_rate_cost"] * df_usage_and_price["scaled_kwh_usage"] / config.HEAT_PUMP_COP) * (1+config.TAX_RATE)
 
     return df_usage_and_price
 
@@ -214,3 +219,8 @@ def get_usage_data(config: ElectricityConfig | None = None) -> tuple[Electricity
     df_usage_and_price = calculate_usage_and_price(df_hourly, day_ahead_hourly, config=config)
 
     return config, df_usage_and_price
+
+def get_max_heat_demand(df_usage_and_price: pd.DataFrame) -> float:
+    """Function which calculates the maximum heat demand from the usage data."""
+    max_heat_demand = df_usage_and_price["scaled_kwh_usage"].max()
+    return max_heat_demand

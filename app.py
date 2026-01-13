@@ -9,8 +9,8 @@ from matplotlib.ticker import FuncFormatter
 
 import logging
 
-from src.data_processing import get_usage_data, ElectricityConfig
-from src.pulp_optimiser import solve_battery_dispatch_pulp, solve_battery_dispatch_pulp_fixed_battery, BatteryDispatchResult
+from src.data_processing import get_usage_data, get_max_heat_demand, ElectricityConfig
+from src.pulp_optimiser import solve_tes_dispatch_pulp, solve_tes_dispatch_pulp_fixed_battery, BatteryDispatchResult
 from src.cost_calculations import calculate_projections, inflation_adjusted_cost, calculate_inflation_adjusted_costs
 
 logging.basicConfig(level=logging.INFO)
@@ -46,6 +46,9 @@ def main():
     
     if 'config' not in st.session_state:
         st.session_state.config = load_config()
+        st.session_state.config.HEAT_PUMP_SIZE_KW = get_max_heat_demand(st.session_state.usage_data)
+        st.session_state.config.TES_SIZE_KWH = get_max_heat_demand(st.session_state.usage_data)/2
+        st.session_state.config.TES_POWER = get_max_heat_demand(st.session_state.usage_data)/2
 
     
     if 'original_cost' not in st.session_state:
@@ -60,7 +63,8 @@ def main():
             charge=[],
             discharge=[],
             soc=[],
-            mode=[],
+            tes_size=None,
+            heat_pump_size=None,
             price=[],
             total_cost=None
         )
@@ -82,6 +86,16 @@ def main():
 
     if 'fixed_battery_size' not in st.session_state:
         st.session_state.fixed_battery_size = False
+
+    if 'fixed_heat_pump_size' not in st.session_state:
+        st.session_state.fixed_heat_pump_size = False
+
+    if 'non_optimised_capex' not in st.session_state:
+        st.session_state.non_optimised_capex = (
+            (st.session_state.config.TES_SIZE_KWH * st.session_state.config.TES_COST_PER_KWH 
+            + st.session_state.config.HEAT_PUMP_SIZE_KW * st.session_state.config.HEAT_PUMP_COST_PER_KW)
+            * (1 + st.session_state.config.TAX_RATE)
+        )
     
     # Sidebar for navigation
     st.sidebar.title("Navigation")
@@ -95,7 +109,7 @@ def main():
 def calculate_cost_with_battery(optimisation_results: BatteryDispatchResult, config: ElectricityConfig) -> float:
     if optimisation_results.total_cost is None:
         return 0.0
-    battery_capex = optimisation_results.battery_size * config.BATTERY_COST_PER_KWH
+    battery_capex = optimisation_results.tes_size * config.TES_COST_PER_KWH # type: ignore
     battery_opex = battery_capex * config.OPEX_PERCENT_OF_CAPEX
     total_battery_cost = (battery_capex + battery_opex) * (1 + config.TAX_RATE)
     return optimisation_results.total_cost + total_battery_cost
@@ -104,23 +118,14 @@ def show_cost_modelling(config):
     st.title("Cost Modelling")
     
     st.header("Configuration Parameters")
-    on = st.toggle("Heat Battery Modelling", value=False, help="Doesn't do anything. Just adds as a reminder to what you're modelling.")
-    st.session_state.fixed_battery_size = st.toggle("Fix Battery Size", value=False, help="Enables you to set the battery size manually rather than optimising it.")
+    st.session_state.fixed_heat_pump_size = st.toggle("Fix Heat Pump Size", value=False, help="Sets a fixed heat pump size rather than optimising it. Will set it to the maximum heat demand.")
+    st.session_state.fixed_battery_size = st.toggle("Fix TES Size", value=False, help="Enables you to set the TES size manually rather than optimising it.")
     
     # Create three columns for better layout
     col1, col2, col3 = st.columns(3)
     
     with col1:
         st.subheader("Usage & Rates")
-        st.session_state.config.SOC_FACTOR = st.number_input(
-            "SOC factor (Total usable capacity)", 
-            value=config.SOC_FACTOR,
-            step=0.05,
-            help=(
-                "The total percent of the battery that can be used. If this is set to 0.8, "
-                "then the battery will charge from 10% to 90% of its total capacity."
-            )
-        )
         st.number_input(
             "Scale Factor", 
             value=config.SCALE_FACTOR,
@@ -155,37 +160,45 @@ def show_cost_modelling(config):
 
     
     with col2:
-        st.subheader("Battery Parameters")
+        st.subheader("TES Parameters")
         st.session_state.config.BATTERY_INEFFICIENCY_FACTOR = st.number_input(
-            "Battery Inefficiency Factor", 
+            "TES Inefficiency Factor", 
             value=config.BATTERY_INEFFICIENCY_FACTOR,
             step=0.01,
             format="%.2f",
             help=(
-                "Value between 0 and 1 representing the efficiency of charging/discharging the battery. "
+                "Value between 0 and 1 representing the efficiency of charging/discharging the TES. "
                 "A value of 0.9 would mean 90% efficiency for charging and for discharging, leaing to a "
                 "90% * 90% = 81% round-trip efficiency."
             )
         )
-        st.session_state.config.BATTERY_SIZE_KWH = st.number_input(
-            "Battery Size (kWh)", 
-            value=config.BATTERY_SIZE_KWH,
-            step=5,
+        st.session_state.config.HEAT_PUMP_SIZE_KW = st.number_input(
+            "Heat Pump Size kW", 
+            value=config.HEAT_PUMP_SIZE_KW,
+            step=10.0,
+            help="The max size of the heat pump in kW. The default value is the maximum heat demand.",
+            disabled= not st.session_state.fixed_heat_pump_size,
+        )
+        st.session_state.config.TES_SIZE_KWH = st.number_input(
+            "TES Size (kWh)", 
+            value=config.TES_SIZE_KWH,
+            step=5.0,
             disabled= not st.session_state.fixed_battery_size,
         )
-        st.session_state.config.BATTERY_POWER = st.number_input(
-            "Battery Power (kW)", 
-            value=config.BATTERY_POWER,
-            step=5,
-            help="Maximum power the battery can charge or discharge at any one time before the efficiency factor is considered."
+        st.session_state.config.TES_POWER = st.number_input(
+            "TES Power (kW)", 
+            value=config.TES_POWER,
+            step=5.0,
+            help="Maximum power the TES can charge or discharge within an hour. This is set to half the maximum heat demand by default.",
+            disabled = not st.session_state.fixed_battery_size,
         )
    
     
     with col3:
-        st.subheader("Battery Investment")
-        st.session_state.config.BATTERY_COST_PER_KWH = st.number_input(
-            "Battery Cost per kWh (€/kWh)", 
-            value=config.BATTERY_COST_PER_KWH,
+        st.subheader("TES Investment")
+        st.session_state.config.TES_COST_PER_KWH = st.number_input(
+            "TES Cost per kWh (€/kWh)", 
+            value=config.TES_COST_PER_KWH,
             step=10.0
         )
         st.session_state.config.OPEX_PERCENT_OF_CAPEX = st.number_input(
@@ -280,11 +293,10 @@ def show_cost_modelling(config):
                 "ADDITIONAL_COST": st.session_state.config.ADDITIONAL_COST,
                 "KONZESSION": st.session_state.config.KONZESSION,
                 "CHP_SURCHARGE": st.session_state.config.CHP_SURCHARGE,
-                "BATTERY_COST_PER_KWH": st.session_state.config.BATTERY_COST_PER_KWH,
+                "TES_COST_PER_KWH": st.session_state.config.TES_COST_PER_KWH,
                 "OPEX_PERCENT_OF_CAPEX": st.session_state.config.OPEX_PERCENT_OF_CAPEX,
-                "BATTERY_SIZE_KWH": st.session_state.config.BATTERY_SIZE_KWH,
-                "BATTERY_POWER": st.session_state.config.BATTERY_POWER,
-                "SOC_FACTOR": st.session_state.config.SOC_FACTOR,
+                "TES_SIZE_KWH": st.session_state.config.TES_SIZE_KWH,
+                "TES_POWER": st.session_state.config.TES_POWER,
                 "INFLATION_RATE": st.session_state.config.INFLATION_RATE
             }
             yaml.dump(yaml_data, f)
@@ -299,14 +311,14 @@ def show_cost_modelling(config):
         with st.spinner("Running optimization. This will take a moment..."):
 
             if not st.session_state.fixed_battery_size:
-                st.session_state.optimisation_results : BatteryDispatchResult = solve_battery_dispatch_pulp( # type: ignore
+                st.session_state.optimisation_results : BatteryDispatchResult = solve_tes_dispatch_pulp( # type: ignore
                     price=st.session_state.usage_data['c_variable_and_fixed_per_kwh'],
                     demand=st.session_state.usage_data['scaled_kwh_usage'],
                     years = st.session_state.investment_duration_years,
                     config=st.session_state.config,
                 )
             else:
-                st.session_state.optimisation_results : BatteryDispatchResult = solve_battery_dispatch_pulp_fixed_battery( # type: ignore
+                st.session_state.optimisation_results : BatteryDispatchResult = solve_tes_dispatch_pulp_fixed_battery( # type: ignore
                     price=st.session_state.usage_data['c_variable_and_fixed_per_kwh'],
                     demand=st.session_state.usage_data['scaled_kwh_usage'],
                     years = st.session_state.investment_duration_years,
@@ -334,7 +346,7 @@ def show_cost_modelling(config):
             # Project this date investment_period years into the future
             st.session_state.breakeven = calculate_projections(
                 st.session_state.usage_data, 
-                st.session_state.optimisation_results.battery_size, # type: ignore
+                st.session_state.optimisation_results.tes_size, # type: ignore
                 config=st.session_state.config,
             )
 
@@ -352,6 +364,7 @@ def show_cost_modelling(config):
                 'soc': st.session_state.optimisation_results.soc,
                 'battery_charge_kwh': st.session_state.optimisation_results.charge,
                 'battery_discharge_kwh': st.session_state.optimisation_results.discharge,   
+                'price_c_per_kwh': st.session_state.optimisation_results.price,
             }
         ))
 
@@ -383,12 +396,12 @@ def show_cost_modelling(config):
 
     with col_result2:
         st.metric(
-            label="Original Flat Rate Cost",
+            label="Flat Rate Cost with Heat Pump",
             value=(f"""{inflation_adjusted_cost(
                 st.session_state.usage_data['c_total_flat_cost'].sum()/100, 
                 st.session_state.investment_duration_years, 
                 st.session_state.config.INFLATION_RATE
-                ) :,.0f} €"""
+                ) + st.session_state.non_optimised_capex :,.0f} €"""
             ),
             delta=None,
             help="This is the inflation adjusted electricity cost for the period based on a flat rate without any energy stored in the battery."
@@ -402,7 +415,7 @@ def show_cost_modelling(config):
                 st.session_state.usage_data['c_total_variable_cost'].sum()/100, 
                 st.session_state.investment_duration_years, 
                 st.session_state.config.INFLATION_RATE
-                ) :,.0f} €"""
+                ) + st.session_state.non_optimised_capex :,.0f} €"""
             ),
             delta=None,
             help="This is the inflation adjusted variable cost for the period if no battery is purchased and the user simply switches to a variable tarrif"
@@ -423,24 +436,24 @@ def show_cost_modelling(config):
 
     with col_result1:
         st.metric(
-            label="Optimised battery size (kWh)",
+            label="Optimised TES size (kWh)",
             value=(
-                f"{st.session_state.optimisation_results.battery_size:,.0f} kWh" 
-                if st.session_state.optimisation_results.battery_size is not None else "N/A"
+                f"{st.session_state.optimisation_results.tes_size:,.0f} kWh" 
+                if st.session_state.optimisation_results.tes_size is not None else "N/A"
             ),
             delta=None,
-            help="This is the optimised battery size based on the current configuration. If the battery size is 0 kWh this indicates that a battery is not cost effective under the current parameters."
+            help="This is the optimised TES size based on the current configuration. If the TES size is 0 kWh this indicates that a TES is not cost effective under the current parameters."
         )
     
     with col_result2:
         st.metric(
-            label="Battery Capex",
+            label="TES Capex",
             value=(
-                f"{st.session_state.optimisation_results.battery_size * st.session_state.config.BATTERY_COST_PER_KWH * (1 + st.session_state.config.TAX_RATE):,.0f} €" 
-                if st.session_state.optimisation_results.battery_size is not None else "N/A"
+                f"{st.session_state.optimisation_results.tes_size * st.session_state.config.TES_COST_PER_KWH * (1 + st.session_state.config.TAX_RATE):,.0f} €" 
+                if st.session_state.optimisation_results.tes_size is not None else "N/A"
             ),
             delta=None,
-            help="This is the capital expenditure (Capex) for the optimised battery size."
+            help="This is the capital expenditure (Capex) for the optimised TES size."
         )
         
     col_result1, col_result2 = st.columns(2)    
@@ -802,13 +815,29 @@ def show_raw_data(config):
                 (st.session_state.profile_with_battery['datetime'].dt.date <= end)]
         )
         # ax3.plot(temp_df['datetime'], temp_df['grid_kwh_usage'], label='Grid Usage')
-        ax3.plot(temp_df['datetime'], temp_df['scaled_kwh_usage'], label='Original Grid Usage')
+        ax3.plot(
+            temp_df['datetime'], 
+            temp_df['scaled_kwh_usage'] / st.session_state.config.HEAT_PUMP_COP, 
+            label='Original Grid Usage'
+            )
         ax3.plot(
             temp_df['datetime'], 
             temp_df['grid_kwh_usage'], 
             label='New Grid Usage With Battery', 
             linestyle='dotted'
             )
+        ax3_right = ax3.twinx()
+        ax3_right.plot(
+            temp_df['datetime'], 
+            temp_df['price_c_per_kwh'], 
+            label='Price (c/kWh)', 
+            linestyle='dashed',
+            color='red', 
+            alpha=0.5
+        )
+        ax3_right.set_ylabel('Price (c/kWh)', color='red')
+        ax3_right.tick_params(axis='y', labelcolor='red')
+        ax3_right.legend(loc='upper right')
         fig3.autofmt_xdate()
         ax3.legend()
         st.pyplot(fig3)
