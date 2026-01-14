@@ -6,14 +6,15 @@ import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 from matplotlib.ticker import FuncFormatter
-
 import logging
 
-from src.data_processing import get_usage_data, ElectricityConfig
-from src.pulp_optimiser import solve_battery_dispatch_pulp, solve_battery_dispatch_pulp_fixed_battery, BatteryDispatchResult
+from src.data_processing import get_usage_data, get_max_heat_demand, ElectricityConfig
+from src.pulp_optimiser import solve_tes_dispatch_pulp, solve_tes_dispatch_pulp_fixed_battery, BatteryDispatchResult
 from src.cost_calculations import calculate_projections, inflation_adjusted_cost, calculate_inflation_adjusted_costs
+from src.breakeven_plots import fixed_vs_variable_breakeven, variable_vs_variable_optimised_breakeven
+from src.raw_data_plots import plot_raw_data
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Load configuration from YAML
 @st.cache_data
@@ -33,25 +34,40 @@ def reload_data():
     st.session_state.config.SCALE_FACTOR = st.session_state.scale_factor
     logging.info(f"Reload triggered, scale factor: {st.session_state.scale_factor}")
     _, st.session_state.usage_data = get_usage_data(config=st.session_state.config)
-    st.session_state.usage_data = st.session_state.usage_data[st.session_state.usage_data.datetime < '2025-12-01']
+    # st.session_state.usage_data = st.session_state.usage_data[st.session_state.usage_data.datetime < '2025-12-01']
     st.session_state.usage_data['c_variable_total_cost_with_battery'] = 0.0
 
+def manual_capex_update():
+    st.session_state.config.HEAT_PUMP_COST_PER_KW = st.session_state.hp_cost_per_kw
+
+    st.session_state.non_optimised_capex = (
+        st.session_state.config.TES_SIZE_KWH * st.session_state.config.TES_COST_PER_KWH 
+        + st.session_state.config.HEAT_PUMP_SIZE_KW * st.session_state.config.HEAT_PUMP_COST_PER_KW
+    )
+
+def add_tax(amount: float) -> float:
+    """Function to add tax to a given amount based on the configuration tax rate."""
+    tax_rate = st.session_state.config.TAX_RATE if 'config' in st.session_state else 0.19
+    return amount * (1 + tax_rate)
 
 def main():
     st.set_page_config(page_title="Electricity Cost Model", layout="wide")
     if 'usage_data' not in st.session_state:
         _, st.session_state.usage_data = get_usage_data()
-        st.session_state.usage_data = st.session_state.usage_data[st.session_state.usage_data.datetime < '2025-12-01']
+        # st.session_state.usage_data = st.session_state.usage_data[st.session_state.usage_data.datetime < '2025-12-01']
         st.session_state.usage_data['c_variable_total_cost_with_battery'] = 0.0
     
     if 'config' not in st.session_state:
         st.session_state.config = load_config()
+        st.session_state.config.HEAT_PUMP_SIZE_KW = get_max_heat_demand(st.session_state.usage_data)
+        st.session_state.config.TES_SIZE_KWH = 0.0
+        st.session_state.config.TES_POWER = 0.0
 
     
     if 'original_cost' not in st.session_state:
         st.session_state.original_cost = (
             (st.session_state.usage_data['c_variable_and_fixed_per_kwh'] * 
-            st.session_state.usage_data['scaled_kwh_usage']).sum() * (1 + st.session_state.config.TAX_RATE) / 100
+            st.session_state.usage_data['scaled_kwh_usage']).sum()  / 100
         )
     
     if 'optimisation_results' not in st.session_state:
@@ -60,7 +76,8 @@ def main():
             charge=[],
             discharge=[],
             soc=[],
-            mode=[],
+            tes_size=None,
+            heat_pump_size=None,
             price=[],
             total_cost=None
         )
@@ -80,8 +97,20 @@ def main():
     if 'inflation_adjusted_costs' not in st.session_state:
         st.session_state.inflation_adjusted_costs = {}
 
-    if 'fixed_battery_size' not in st.session_state:
-        st.session_state.fixed_battery_size = False
+    if 'fixed_heat_pump_size' not in st.session_state:
+        st.session_state.fixed_heat_pump_size = False
+
+    if 'non_optimised_capex' not in st.session_state:
+        st.session_state.non_optimised_capex = (
+            st.session_state.config.TES_SIZE_KWH * st.session_state.config.TES_COST_PER_KWH 
+            + st.session_state.config.HEAT_PUMP_SIZE_KW * st.session_state.config.HEAT_PUMP_COST_PER_KW
+        )
+    
+    if "hp_cost_per_kw" not in st.session_state:
+        st.session_state.hp_cost_per_kw = st.session_state.config.HEAT_PUMP_COST_PER_KW
+
+    if 'optimisation_message' not in st.session_state:
+        st.session_state.optimisation_message = '(Fixed)'
     
     # Sidebar for navigation
     st.sidebar.title("Navigation")
@@ -90,37 +119,29 @@ def main():
     if option == "Cost Modelling":
         show_cost_modelling(st.session_state.config)
     elif option == "Raw Data":
-        show_raw_data(st.session_state.config)
+        show_raw_data()
 
 def calculate_cost_with_battery(optimisation_results: BatteryDispatchResult, config: ElectricityConfig) -> float:
     if optimisation_results.total_cost is None:
         return 0.0
-    battery_capex = optimisation_results.battery_size * config.BATTERY_COST_PER_KWH
+    battery_capex = optimisation_results.tes_size * config.TES_COST_PER_KWH # type: ignore
     battery_opex = battery_capex * config.OPEX_PERCENT_OF_CAPEX
-    total_battery_cost = (battery_capex + battery_opex) * (1 + config.TAX_RATE)
+    total_battery_cost = (battery_capex + battery_opex) 
     return optimisation_results.total_cost + total_battery_cost
 
 def show_cost_modelling(config):
     st.title("Cost Modelling")
     
     st.header("Configuration Parameters")
-    on = st.toggle("Heat Battery Modelling", value=False, help="Doesn't do anything. Just adds as a reminder to what you're modelling.")
-    st.session_state.fixed_battery_size = st.toggle("Fix Battery Size", value=False, help="Enables you to set the battery size manually rather than optimising it.")
-    
+    st.session_state.fixed_heat_pump_size = st.toggle(
+        "Manually Set Heat Pump & TES Size", 
+        value=False, 
+        help="Sets a fixed heat pump & TES size rather than optimising it. The default value for the heat pump size is the the maximum heat demand.")
     # Create three columns for better layout
     col1, col2, col3 = st.columns(3)
     
     with col1:
         st.subheader("Usage & Rates")
-        st.session_state.config.SOC_FACTOR = st.number_input(
-            "SOC factor (Total usable capacity)", 
-            value=config.SOC_FACTOR,
-            step=0.05,
-            help=(
-                "The total percent of the battery that can be used. If this is set to 0.8, "
-                "then the battery will charge from 10% to 90% of its total capacity."
-            )
-        )
         st.number_input(
             "Scale Factor", 
             value=config.SCALE_FACTOR,
@@ -155,37 +176,59 @@ def show_cost_modelling(config):
 
     
     with col2:
-        st.subheader("Battery Parameters")
+        st.subheader("Heat Pump Parameters")
         st.session_state.config.BATTERY_INEFFICIENCY_FACTOR = st.number_input(
-            "Battery Inefficiency Factor", 
+            "TES Inefficiency Factor", 
             value=config.BATTERY_INEFFICIENCY_FACTOR,
             step=0.01,
             format="%.2f",
             help=(
-                "Value between 0 and 1 representing the efficiency of charging/discharging the battery. "
+                "Value between 0 and 1 representing the efficiency of charging/discharging the TES. "
                 "A value of 0.9 would mean 90% efficiency for charging and for discharging, leaing to a "
                 "90% * 90% = 81% round-trip efficiency."
             )
         )
-        st.session_state.config.BATTERY_SIZE_KWH = st.number_input(
-            "Battery Size (kWh)", 
-            value=config.BATTERY_SIZE_KWH,
-            step=5,
-            disabled= not st.session_state.fixed_battery_size,
+        st.session_state.config.HEAT_PUMP_SIZE_KW = st.number_input(
+            "Heat Pump Size kW", 
+            value=config.HEAT_PUMP_SIZE_KW,
+            step=10.0,
+            help="The max size of the heat pump in kW. The default value is the maximum heat demand in the input data.",
+            disabled= not st.session_state.fixed_heat_pump_size,
         )
-        st.session_state.config.BATTERY_POWER = st.number_input(
-            "Battery Power (kW)", 
-            value=config.BATTERY_POWER,
-            step=5,
-            help="Maximum power the battery can charge or discharge at any one time before the efficiency factor is considered."
+        st.session_state.config.MAX_TES_SIZE_KWH = st.number_input(
+            "Max TES Size (kWh)", 
+            value=config.MAX_TES_SIZE_KWH,
+            step=50,
+            help="Maximum TES size to consider during optimisation.",
+            disabled = st.session_state.fixed_heat_pump_size,
+        )
+        st.session_state.config.TES_SIZE_KWH = st.number_input(
+            "TES Size (kWh)", 
+            value=config.TES_SIZE_KWH,
+            step=5.0,
+            disabled= not st.session_state.fixed_heat_pump_size,
+            help="The total storage capacity of the TES in kWh.",
+        )
+        st.session_state.config.TES_POWER = st.number_input(
+            "TES Power (kW)", 
+            value=config.TES_POWER,
+            step=5.0,
+            help="Maximum power the TES can charge or discharge within an hour.",
+            disabled = not st.session_state.fixed_heat_pump_size,
         )
    
     
     with col3:
-        st.subheader("Battery Investment")
-        st.session_state.config.BATTERY_COST_PER_KWH = st.number_input(
-            "Battery Cost per kWh (€/kWh)", 
-            value=config.BATTERY_COST_PER_KWH,
+        st.subheader("Investment Parameters")
+        st.session_state.config.HEAT_PUMP_COST_PER_KW = st.number_input(
+            "Heat Pump Cost per kW (€/kW)", 
+            step=50,
+            on_change=manual_capex_update,
+            key="hp_cost_per_kw",
+        )
+        st.session_state.config.TES_COST_PER_KWH = st.number_input(
+            "TES Cost per kWh (€/kWh)", 
+            value=config.TES_COST_PER_KWH,
             step=10.0
         )
         st.session_state.config.OPEX_PERCENT_OF_CAPEX = st.number_input(
@@ -232,7 +275,7 @@ def show_cost_modelling(config):
             "Tax Rate (% / 100)", 
             value=config.TAX_RATE,
             step=0.01,
-            format="%.2f"
+            format="%.2f",
         )
     
     with col5:  
@@ -267,28 +310,27 @@ def show_cost_modelling(config):
         st.session_state.config = ElectricityConfig() # resets to default values
         st.rerun()
     
-    if st.button("Save Configuration", disabled=True):
-        with open(f"config/config_{datetime.now().strftime('%Y%m%d_%H%M%S')}.yaml", "w") as f:
-            yaml_data = {
-                "ANNUAL_USAGE": st.session_state.config.ANNUAL_USAGE,
-                "BASELINE_USAGE_MWH": st.session_state.config.BASELINE_USAGE_MWH,
-                "FLAT_RATE_C_PER_KWH": st.session_state.config.FLAT_RATE_C_PER_KWH,
-                "BATTERY_INEFFICIENCY_FACTOR": st.session_state.config.BATTERY_INEFFICIENCY_FACTOR,
-                "NETWORK_USAGE": st.session_state.config.NETWORK_USAGE,
-                "TAX_RATE": st.session_state.config.TAX_RATE,
-                "ELECTRICITY_TAX": st.session_state.config.ELECTRICITY_TAX,
-                "ADDITIONAL_COST": st.session_state.config.ADDITIONAL_COST,
-                "KONZESSION": st.session_state.config.KONZESSION,
-                "CHP_SURCHARGE": st.session_state.config.CHP_SURCHARGE,
-                "BATTERY_COST_PER_KWH": st.session_state.config.BATTERY_COST_PER_KWH,
-                "OPEX_PERCENT_OF_CAPEX": st.session_state.config.OPEX_PERCENT_OF_CAPEX,
-                "BATTERY_SIZE_KWH": st.session_state.config.BATTERY_SIZE_KWH,
-                "BATTERY_POWER": st.session_state.config.BATTERY_POWER,
-                "SOC_FACTOR": st.session_state.config.SOC_FACTOR,
-                "INFLATION_RATE": st.session_state.config.INFLATION_RATE
-            }
-            yaml.dump(yaml_data, f)
-        st.success(f"Configuration saved to config/config_{datetime.now().strftime('%Y%m%d_%H%M%S')}.yaml")
+    # if st.button("Save Configuration", disabled=True):
+    #     with open(f"config/config_{datetime.now().strftime('%Y%m%d_%H%M%S')}.yaml", "w") as f:
+    #         yaml_data = {
+    #             "ANNUAL_USAGE": st.session_state.config.ANNUAL_USAGE,
+    #             "BASELINE_USAGE_MWH": st.session_state.config.BASELINE_USAGE_MWH,
+    #             "FLAT_RATE_C_PER_KWH": st.session_state.config.FLAT_RATE_C_PER_KWH,
+    #             "BATTERY_INEFFICIENCY_FACTOR": st.session_state.config.BATTERY_INEFFICIENCY_FACTOR,
+    #             "NETWORK_USAGE": st.session_state.config.NETWORK_USAGE,
+    #             "TAX_RATE": st.session_state.config.TAX_RATE,
+    #             "ELECTRICITY_TAX": st.session_state.config.ELECTRICITY_TAX,
+    #             "ADDITIONAL_COST": st.session_state.config.ADDITIONAL_COST,
+    #             "KONZESSION": st.session_state.config.KONZESSION,
+    #             "CHP_SURCHARGE": st.session_state.config.CHP_SURCHARGE,
+    #             "TES_COST_PER_KWH": st.session_state.config.TES_COST_PER_KWH,
+    #             "OPEX_PERCENT_OF_CAPEX": st.session_state.config.OPEX_PERCENT_OF_CAPEX,
+    #             "TES_SIZE_KWH": st.session_state.config.TES_SIZE_KWH,
+    #             "TES_POWER": st.session_state.config.TES_POWER,
+    #             "INFLATION_RATE": st.session_state.config.INFLATION_RATE
+    #         }
+    #         yaml.dump(yaml_data, f)
+    #     st.success(f"Configuration saved to config/config_{datetime.now().strftime('%Y%m%d_%H%M%S')}.yaml")
     
     st.markdown("---")
     
@@ -298,15 +340,15 @@ def show_cost_modelling(config):
     if st.button("Optimize Costs"):
         with st.spinner("Running optimization. This will take a moment..."):
 
-            if not st.session_state.fixed_battery_size:
-                st.session_state.optimisation_results : BatteryDispatchResult = solve_battery_dispatch_pulp( # type: ignore
+            if not st.session_state.fixed_heat_pump_size:
+                st.session_state.optimisation_results : BatteryDispatchResult = solve_tes_dispatch_pulp( # type: ignore
                     price=st.session_state.usage_data['c_variable_and_fixed_per_kwh'],
                     demand=st.session_state.usage_data['scaled_kwh_usage'],
                     years = st.session_state.investment_duration_years,
                     config=st.session_state.config,
                 )
             else:
-                st.session_state.optimisation_results : BatteryDispatchResult = solve_battery_dispatch_pulp_fixed_battery( # type: ignore
+                st.session_state.optimisation_results : BatteryDispatchResult = solve_tes_dispatch_pulp_fixed_battery( # type: ignore
                     price=st.session_state.usage_data['c_variable_and_fixed_per_kwh'],
                     demand=st.session_state.usage_data['scaled_kwh_usage'],
                     years = st.session_state.investment_duration_years,
@@ -315,14 +357,13 @@ def show_cost_modelling(config):
 
             # Put total cost into €/kWh with tax
             st.session_state.optimisation_results.total_cost = (
-                st.session_state.optimisation_results.total_cost / 100 * (1 + st.session_state.config.TAX_RATE) # type: ignore
+                st.session_state.optimisation_results.total_cost / 100  # type: ignore
             )   
 
             # This gives the cost without CAPEX in €; we already add tax in here
             st.session_state.usage_data['c_variable_total_cost_without_battery'] = (
                 st.session_state.optimisation_results.grid * 
-                st.session_state.usage_data['c_variable_and_fixed_per_kwh'] * 
-                (1 + st.session_state.config.TAX_RATE) / 100
+                st.session_state.usage_data['c_variable_and_fixed_per_kwh'] / 100
             )
 
             # Put the cost the optimised cost with battery usage into another variable
@@ -330,13 +371,16 @@ def show_cost_modelling(config):
                 st.session_state.usage_data['c_variable_total_cost_without_battery'] # + battery_capex
 
             )
-
+            logging.info(f"usage_date min_date: {st.session_state.usage_data['datetime'].min()}, max_date: {st.session_state.usage_data['datetime'].max()}")
             # Project this date investment_period years into the future
             st.session_state.breakeven = calculate_projections(
                 st.session_state.usage_data, 
-                st.session_state.optimisation_results.battery_size, # type: ignore
+                st.session_state.optimisation_results.tes_size, # type: ignore
+                st.session_state.optimisation_results.heat_pump_size, # type: ignore
                 config=st.session_state.config,
             )
+
+            st.session_state.optimisation_message = '(Optimised)'
 
         # When we optimise for the cost whilst also optimising the battery size, this isn't needed 
         # st.session_state.optimisation_results_with_battery = calculate_cost_with_battery(
@@ -352,6 +396,7 @@ def show_cost_modelling(config):
                 'soc': st.session_state.optimisation_results.soc,
                 'battery_charge_kwh': st.session_state.optimisation_results.charge,
                 'battery_discharge_kwh': st.session_state.optimisation_results.discharge,   
+                'price_c_per_kwh': st.session_state.optimisation_results.price,
             }
         ))
 
@@ -364,83 +409,158 @@ def show_cost_modelling(config):
 
         st.success("Optimization complete!")
 
-    st.write(f"Inflation adjusted cost for **{st.session_state.investment_duration_years} years**.")
+    st.write(f"Inflation adjusted cost for **{st.session_state.investment_duration_years} years**")
     col_result1, col_result2 = st.columns(2)
+    
+    #######################
+    ### --- Metrics --- ###
+    #######################
 
     with col_result1:
         st.metric(
             label="Gas Heating Cost",
             value=(f"""
-                {inflation_adjusted_cost(
-                    st.session_state.usage_data['scaled_kwh_usage'].sum() * st.session_state.config.GAS_HEATING_C_PER_KWH * st.session_state.config.GAS_CONVERSION_RATIO / 100 * (1 + st.session_state.config.TAX_RATE),
+                {add_tax(inflation_adjusted_cost(
+                    st.session_state.usage_data['scaled_kwh_usage'].sum() * st.session_state.config.GAS_HEATING_C_PER_KWH * st.session_state.config.GAS_CONVERSION_RATIO / 100,
                     st.session_state.investment_duration_years,
                     st.session_state.config.INFLATION_RATE
-                ):,.0f} €"""
+                )):,.0f} €"""
             ),
             delta=None,
-            help="Usage of gas heating system in kWh over the period."
+            help="Usage of gas heating system over the investment duration. This does not require any CAPEX."
         )
 
     with col_result2:
-        st.metric(
-            label="Original Flat Rate Cost",
-            value=(f"""{inflation_adjusted_cost(
-                st.session_state.usage_data['c_total_flat_cost'].sum()/100, 
-                st.session_state.investment_duration_years, 
-                st.session_state.config.INFLATION_RATE
-                ) :,.0f} €"""
-            ),
-            delta=None,
-            help="This is the inflation adjusted electricity cost for the period based on a flat rate without any energy stored in the battery."
+        base_cost = inflation_adjusted_cost(
+            st.session_state.usage_data["c_total_flat_cost"].sum() / 100,
+            st.session_state.investment_duration_years,
+            st.session_state.config.INFLATION_RATE,
         )
+
+        capex = st.session_state.non_optimised_capex
+
+        st.metric(
+            label="Flat Rate Cost with Heat Pump (Non Optimised)",
+            value=f"{add_tax(base_cost + capex):,.0f} €",
+            help=("This is the inflation adjusted electricity cost for the period based on a flat rate without any optimisation. "
+                  "It includes the cost of a heat pump and TES if the sizes are set in the configuration."
+                  ),
+        )
+
+
+    with col_result1:
+        base_cost = inflation_adjusted_cost(
+            st.session_state.usage_data["c_total_flat_cost"].sum() / 100,
+            st.session_state.investment_duration_years,
+            st.session_state.config.INFLATION_RATE,
+        )
+
+        if st.session_state.optimisation_results.heat_pump_size is None:
+            st.metric(
+                label="Flat Rate Cost with Heat Pump (Optimised)",
+                value=f"N/A",
+                help=(
+                    "This is the inflation adjusted electricity cost for the period based on a flat " 
+                    "rate with the storage and heat pump optimised. The storage and heat pump are optimised here based on the "
+                    "variable rate electricity cost, so this is an estimate only."
+                )
+            )
+        else:
+            capex = (
+                st.session_state.optimisation_results.heat_pump_size
+                * st.session_state.config.HEAT_PUMP_COST_PER_KW
+            )
+            st.metric(
+                label="Flat Rate Cost with Heat Pump (Optimised)",
+                value=f"{add_tax(base_cost + capex):,.0f} €",
+                help=(
+                    "This is the inflation adjusted electricity cost for the period based on a flat " 
+                    "rate with the storage and heat pump optimised. The storage and heat pump are optimised here based on the "
+                    "variable rate electricity cost, so this is an estimate only."
+                )
+            )
+
+
+
+    with col_result2:
+        pass
 
     col_result1, col_result2 = st.columns(2)
     with col_result1:
         st.metric(
-            label="Variable Rate Cost (No Battery)",
-            value=(f"""{inflation_adjusted_cost(
+            label="Variable Rate Cost with Heat Pump (Non Optimised)",
+            value=(f"""{add_tax(inflation_adjusted_cost(
                 st.session_state.usage_data['c_total_variable_cost'].sum()/100, 
                 st.session_state.investment_duration_years, 
                 st.session_state.config.INFLATION_RATE
-                ) :,.0f} €"""
+                ) + st.session_state.non_optimised_capex) :,.0f} €"""
             ),
             delta=None,
-            help="This is the inflation adjusted variable cost for the period if no battery is purchased and the user simply switches to a variable tarrif"
+            help=(
+                "This is the inflation adjusted variable electricity cost along with a Heat Pump with a fixed size for the period. "
+                "This represents the cost without any optimisation, but with a variable tariff."
+            )
         )
 
     with col_result2:
         st.metric(
-            label="Variable Rate Cost (Incl. Battery CAPEX)",
+            label="Variable Rate Cost with Heat Pump (Optimised)",
             value=(
-                f"{st.session_state.inflation_adjusted_costs['optimised_inflation_adjusted_with_battery_cost']:,.0f} €" 
+                f"{add_tax(st.session_state.inflation_adjusted_costs['optimised_inflation_adjusted_with_battery_cost']):,.0f} €" 
                 if st.session_state.inflation_adjusted_costs else "N/A"
             ),
             delta=None,
-            help="This is the inflation adjusted variable cost for the period with energy stored in the battery."
+            help="This is the inflation adjusted variable cost for the period with an optimised TES battery and heat pump."
         )
 
     col_result1, col_result2 = st.columns(2)
 
     with col_result1:
         st.metric(
-            label="Optimised battery size (kWh)",
+            label=f"Heat Pump size {st.session_state.optimisation_message} kW",
             value=(
-                f"{st.session_state.optimisation_results.battery_size:,.0f} kWh" 
-                if st.session_state.optimisation_results.battery_size is not None else "N/A"
+                f"{st.session_state.optimisation_results.heat_pump_size:,.0f} kW" 
+                if st.session_state.optimisation_results.heat_pump_size is not None else 
+                f"{st.session_state.config.HEAT_PUMP_SIZE_KW:,.0f} kW"
             ),
             delta=None,
-            help="This is the optimised battery size based on the current configuration. If the battery size is 0 kWh this indicates that a battery is not cost effective under the current parameters."
+            help="This is the Heat Pump size. The label indicates whether the size is optimised or fixed."
         )
     
     with col_result2:
         st.metric(
-            label="Battery Capex",
+            label="Heat Pump Capex",
             value=(
-                f"{st.session_state.optimisation_results.battery_size * st.session_state.config.BATTERY_COST_PER_KWH * (1 + st.session_state.config.TAX_RATE):,.0f} €" 
-                if st.session_state.optimisation_results.battery_size is not None else "N/A"
+                f"{add_tax(st.session_state.optimisation_results.heat_pump_size * st.session_state.config.HEAT_PUMP_COST_PER_KW):,.0f} €" 
+                if st.session_state.optimisation_results.heat_pump_size is not None else 
+                f"{add_tax(st.session_state.config.HEAT_PUMP_SIZE_KW * st.session_state.config.HEAT_PUMP_COST_PER_KW):,.0f} €"
             ),
             delta=None,
-            help="This is the capital expenditure (Capex) for the optimised battery size."
+            help="This is the capital expenditure (Capex) for the Heat Pump."
+        )
+
+    col_result1, col_result2 = st.columns(2)
+
+    with col_result1:
+        st.metric(
+            label=f"TES size {st.session_state.optimisation_message} kWh",
+            value=(
+                f"{st.session_state.optimisation_results.tes_size:,.0f} kWh" 
+                if st.session_state.optimisation_results.tes_size is not None else "N/A"
+            ),
+            delta=None,
+            help="This is the TES size. The label indicates whether the size is optimised or fixed."
+        )
+    
+    with col_result2:
+        st.metric(
+            label="TES Capex",
+            value=(
+                f"{add_tax(st.session_state.optimisation_results.tes_size * st.session_state.config.TES_COST_PER_KWH):,.0f} €" 
+                if st.session_state.optimisation_results.tes_size is not None else "N/A"
+            ),
+            delta=None,
+            help="This is the capital expenditure (Capex) for the TES size."
         )
         
     col_result1, col_result2 = st.columns(2)    
@@ -454,12 +574,13 @@ def show_cost_modelling(config):
                     st.session_state.config.INFLATION_RATE
                     )
             )
+            savings_vs_fixed_perc = add_tax(savings_vs_fixed_perc)
         else:
             savings_vs_fixed_perc = "N/A"
 
         st.metric(
-            label="**Savings:** Variable rate with battery vs flat cost",
-            value=(f"{st.session_state.inflation_adjusted_costs['optimised_inflation_adjusted_vs_flat_cost_delta']:,.0f} €"
+            label="**Savings:** Variable rate with TES vs flat cost",
+            value=(f"{add_tax(st.session_state.inflation_adjusted_costs['optimised_inflation_adjusted_vs_flat_cost_delta']):,.0f} €"
                    if st.session_state.inflation_adjusted_costs else "N/A"
                    ),
             delta=(
@@ -467,7 +588,9 @@ def show_cost_modelling(config):
                 if st.session_state.inflation_adjusted_costs else "N/A"
                 )
                 ,
-                help="This shows the difference between the optimized variable cost with battery CAPEX included and the flat rate cost over the investment duration."
+                help=("This shows the difference between the optimized variable energy usage with optimised TES and Heat Pump CAPEX "
+                      "included compared with the flat rate cost with non-optimised Heat Pump and TES sizes over the investment duration."
+                )
         )
     
     with col_result2:
@@ -480,173 +603,50 @@ def show_cost_modelling(config):
                     st.session_state.config.INFLATION_RATE
                     )
             )
+            savings_vs_variable_perc = add_tax(savings_vs_variable_perc)
         else:
             savings_vs_variable_perc = "N/A"
         st.metric(
-            label="**Savings:** Variable rate with battery vs. variable rate alone",
+            label="**Savings:** Variable rate with TES vs. variable rate alone",
             value=(
-                    f"{st.session_state.inflation_adjusted_costs['optimised_inflation_adjusted_vs_variable_cost_delta']:,.0f} €"
+                    f"{add_tax(st.session_state.inflation_adjusted_costs['optimised_inflation_adjusted_vs_variable_cost_delta']):,.0f} €"
                     if st.session_state.inflation_adjusted_costs else "N/A"
                 ),
             delta=(
                     f"{savings_vs_variable_perc:,.2%} €"
                     if st.session_state.inflation_adjusted_costs else "N/A"
                 ),
-            help="This shows the difference between the optimized variable cost with battery CAPEX included and the variable rate cost alone over the investment duration."
+            help=(
+                "This shows the difference between the optimized variable electricity usage with TES and Heat Pump CAPEX "
+                "compared with the non-optimised variable rate with non-optimised TES and Heat Pump sizes over the investment duration."
+            )
         )
     
     st.markdown("---")
     
     # Breakeven graph
-    st.header("Breakeven Analysis")
-    flat_vs_battery_tab, variable_vs_battery_tab = st.tabs(["Flat Cost vs Variable With Battery", "Variable Cost vs Variable With Battery Optimised"])
+    st.header("Cost Comparison Analysis", help=(
+        "These graphs compare the optimised costs over a time window with the the non-optimised costs. Optimised here means that "
+        "the TES size and heat pump size have been optimised to give the lowest cost over the investment duration. "
+        "Non-optimised means that the default values from the configuration file are used without any optimisation. "
+    ))
+    flat_vs_battery_tab, variable_vs_battery_tab = st.tabs(
+        ["Flat Cost (Non-Optimised) vs Variable (Optimised)", "Variable (Non-Optimised) vs Variable (Optimised)"]
+        )
     if st.session_state.breakeven is not None:
 
         projections = st.session_state.breakeven.copy()
-        projections["c_variable_total_cost_with_battery_cumulative"] = projections["c_variable_total_cost_with_battery_cumulative"] 
+        projections["c_variable_total_cost_with_battery_cumulative"] = projections["c_variable_total_cost_with_battery_cumulative"] /100
         projections["c_total_variable_cost_cumulative"] = projections["c_total_variable_cost_cumulative"] /100
         projections["c_total_flat_cost_cumulative"] = projections["c_total_flat_cost_cumulative"]/100
-        projections = projections[projections['datetime'] >= '2025-01-01']
 
         with flat_vs_battery_tab:
-            breakeven_point = projections[
-                projections.c_total_flat_cost_cumulative >=
-                projections.c_variable_total_cost_with_battery_cumulative
-            ]
-
-            breakeven_date = None
-            if len(breakeven_point) > 0:
-                breakeven_date = breakeven_point.iloc[0]["datetime"]
-
-            fig = go.Figure()
-
-            fig.add_trace(
-                go.Scatter(
-                    x=projections["datetime"],
-                    y=projections["c_total_flat_cost_cumulative"],
-                    mode="lines",
-                    name="Fixed Cost Without Battery (Cumulative)",
-                    hovertemplate="%{x|%Y-%m-%d}<br>%{y:,.0f}€<extra></extra>",
-                    line=dict(width=2),
-                )
-            )
-
-            fig.add_trace(
-                go.Scatter(
-                    x=projections["datetime"],
-                    y=projections["c_variable_total_cost_with_battery_cumulative"],
-                    mode="lines",
-                    name="Variable Cost With Battery (Cumulative)",
-                    hovertemplate="%{x|%Y-%m-%d}<br>%{y:,.0f}€<extra></extra>",
-                    line=dict(width=2),
-                )
-            )
-
-            if breakeven_date is not None:
-                fig.add_vline(
-                    x=breakeven_date.to_pydatetime(),
-                    line_width=2,
-                    line_dash="dash",
-                    line_color="red",
-                )
-
-                fig.add_annotation(
-                    x=breakeven_date.to_pydatetime(),
-                    y=1,
-                    yref="paper",
-                    text=f"Breakeven ({breakeven_date.date()})",
-                    showarrow=False,
-                    xanchor="left",
-                    font=dict(color="red"),
-                )
-
-            fig.update_layout(
-                title="Fixed Rate vs Variable Rate with Battery Investment",
-                xaxis_title="Year",
-                yaxis_title="Cumulative Cost (€)",
-                yaxis_tickformat=",",
-                hovermode="x unified",
-                template="simple_white",
-                legend=dict(
-                    x=0.98,
-                    y=0.02,
-                    xanchor="right",
-                    yanchor="bottom",
-                )
-            )
-
-            st.plotly_chart(fig, width="stretch")
+           fixed_vs_variable_breakeven(projections)
 
         with variable_vs_battery_tab:
-            breakeven_point = projections[
-                projections.c_total_variable_cost_cumulative >=
-                projections.c_variable_total_cost_with_battery_cumulative
-            ]
+            variable_vs_variable_optimised_breakeven(projections)
 
-            breakeven_date = None
-            if len(breakeven_point) > 0:
-                breakeven_date = breakeven_point.iloc[0]["datetime"]
-
-            fig = go.Figure()
-
-            fig.add_trace(
-                go.Scatter(
-                    x=projections["datetime"],
-                    y=projections["c_total_variable_cost_cumulative"],
-                    mode="lines",
-                    name="Variable Cost Without Battery (Cumulative)",
-                    hovertemplate="%{x|%Y-%m-%d}<br>%{y:,.0f}€<extra></extra>",
-                    line=dict(width=2),
-                )
-            )
-
-            fig.add_trace(
-                go.Scatter(
-                    x=projections["datetime"],
-                    y=projections["c_variable_total_cost_with_battery_cumulative"],
-                    mode="lines",
-                    name="Variable Cost With Battery (Cumulative)",
-                    hovertemplate="%{x|%Y-%m-%d}<br>%{y:,.0f}€<extra></extra>",
-                    line=dict(width=2),
-                )
-            )
-
-            if breakeven_date is not None:
-                fig.add_vline(
-                    x=breakeven_date.to_pydatetime(),
-                    line_width=2,
-                    line_dash="dash",
-                    line_color="red",
-                )
-
-                fig.add_annotation(
-                    x=breakeven_date.to_pydatetime(),
-                    y=1,
-                    yref="paper",
-                    text=f"Breakeven ({breakeven_date.date()})",
-                    showarrow=False,
-                    xanchor="left",
-                    font=dict(color="red"),
-                )
-
-            fig.update_layout(
-                title="Variable Rate: No Battery vs Battery Investment",
-                xaxis_title="Year",
-                yaxis_title="Cumulative Cost (€)",
-                yaxis_tickformat=",",
-                hovermode="x unified",
-                template="simple_white",
-                legend=dict(
-                    x=0.98,
-                    y=0.02,
-                    xanchor="right",
-                    yanchor="bottom",
-                )
-            )
-
-            st.plotly_chart(fig, width="stretch")
-
-def show_raw_data(config):
+def show_raw_data():
     st.title("Raw Data Analysis")
     
     st.write("Displaying raw electricity data with configured parameters.")
@@ -660,158 +660,12 @@ def show_raw_data(config):
     hourly_monthly_avg_cost = st.session_state.usage_data.groupby(['hour_of_day', 'month_name'])['c_variable_and_fixed_per_kwh'].mean().reset_index()
     hourly_monthly_avg_usage = st.session_state.usage_data.groupby(['hour_of_day', 'month_name'])['scaled_kwh_usage'].mean().reset_index()
 
-    # Get unique months in chronological order
-    month_order = ['January', 'February', 'March', 'April', 'May', 'June', 
-                'July', 'August', 'September', 'October', 'November', 'December']
-    months_in_data = [m for m in month_order if m in hourly_monthly_avg_cost['month_name'].unique()]
-    
-    st.subheader("1. Hourly Electricity Price")
-    st.write("This graph shows the average hourly electricity prices over a typical day for each month, highlighting peak and off-peak periods.")
-    
-    # Graph 1 - Hourly Electricity Price 
-    fig1, ax1 = plt.subplots(figsize=(12, 4))
-    for month in months_in_data:
-        month_data = hourly_monthly_avg_cost[hourly_monthly_avg_cost['month_name'] == month]
-        ax1.plot(month_data['hour_of_day'], month_data['c_variable_and_fixed_per_kwh'], 
-                marker='o', label=month, linewidth=2)
-
-    ax1.set_xlabel('Hour of Day')
-    ax1.set_ylabel('Average Price [c€/kWh]')
-    ax1.set_title('Average Variable + Fixed Cost per kWh by Hour of Day and Month')
-    ax1.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-    ax1.grid(True, alpha=0.3)
-    ax1.set_xticks(range(0, 24))
-    
-    st.pyplot(fig1)
-    
-    st.markdown("---")
-    
-    # Graph 2 - Hourly Consumption Pattern
-    st.subheader("2. Daily Consumption Pattern")
-    st.write("This graph illustrates typical daily electricity consumption patterns, showing peak usage times.")
-    
-    fig2, ax2 = plt.subplots(figsize=(12, 4))
-    for month in months_in_data:
-        month_data = hourly_monthly_avg_usage[hourly_monthly_avg_usage['month_name'] == month]
-        ax2.plot(month_data['hour_of_day'], month_data['scaled_kwh_usage'], 
-                marker='o', label=month, linewidth=2)
-
-    ax2.set_xlabel('Hour of Day')
-    ax2.set_ylabel('Average Consumption (kWh)')
-    ax2.set_title('Average Electricity Consumption by Hour of Day and Month')
-    ax2.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-    ax2.grid(True, alpha=0.3)
-    ax2.set_xticks(range(0, 24))
-    
-    st.pyplot(fig2)
-    
-    st.markdown("---")
-    st.write("3. Combined electricity price and consumption patterns.")
-
-    selected_months = st.multiselect(
-        "Select months to display",
-        options=months_in_data,
-        default="January",
-        help="Select which months you want to look at in the combined graph. By default, only January is shown, but you can select multiple months to compare."
+    plot_raw_data(
+        hourly_monthly_avg_cost=hourly_monthly_avg_cost,
+        hourly_monthly_avg_usage=hourly_monthly_avg_usage,
+        profile_with_battery=st.session_state.profile_with_battery,
     )
-
-    fig = go.Figure()
-
-    # --- Price traces (left y-axis)
-    for month in months_in_data:
-        df_price = hourly_monthly_avg_cost[
-            hourly_monthly_avg_cost["month_name"] == month
-        ]
-
-        fig.add_trace(
-            go.Scatter(
-                x=df_price["hour_of_day"],
-                y=df_price["c_variable_and_fixed_per_kwh"],
-                name=f"{month} - Price",
-                yaxis="y1",
-                mode="lines+markers",
-                line=dict(dash="dash", width=2),
-                visible=month in selected_months,
-                hovertemplate="Hour %{x}<br>%{y:.2f} c€/kWh<extra></extra>",
-            )
-        )
-
-    # --- Consumption traces (right y-axis)
-    for month in months_in_data:
-        df_usage = hourly_monthly_avg_usage[
-            hourly_monthly_avg_usage["month_name"] == month
-        ]
-
-        fig.add_trace(
-            go.Scatter(
-                x=df_usage["hour_of_day"],
-                y=df_usage["scaled_kwh_usage"],
-                name=f"{month} - Consumption",
-                yaxis="y2",
-                mode="lines+markers",
-                visible=month in selected_months,
-                hovertemplate="Hour %{x}<br>%{y:.2f} kWh<extra></extra>",
-            )
-        )
-
-    # --- Layout
-    fig.update_layout(
-        title="Hourly Electricity Price & Consumption by Month",
-        xaxis=dict(
-            title="Hour of Day",
-            tickmode="linear",
-            tick0=0,
-            dtick=1,
-        ),
-        yaxis=dict(
-            title="Average Price [c€/kWh]",
-            side="left",
-        ),
-        yaxis2=dict(
-            title="Average Consumption [kWh]",
-            overlaying="y",
-            side="right",
-        ),
-        hovermode="x unified",
-        template="simple_white",
-        legend=dict(
-            x=1.02,
-            y=1,
-            xanchor="left",
-            yanchor="top",
-        ),
-    )
-
-    st.plotly_chart(fig, width="stretch")
     
-    st.markdown("---")
-    
-    # Graph 3
-    if st.session_state.profile_with_battery is not None:
-        st.subheader("4. Energy Profile with Battery Optimization")
-        st.write("This graph shows the updated energy profile with battery optimization applied, comparing original and new grid usage.")
-
-        start = st.date_input("Start date: yyyy/mm/dd", datetime(2025, 1, 1))
-        end = st.date_input("End date: yyyy/mm/dd", datetime(2025, 1, 7))
-
-         # Graph 3 - Grid Usage vs Raw Usage
-        fig3, ax3 = plt.subplots(figsize=(12, 4))
-        temp_df = (
-            st.session_state.profile_with_battery[
-                (st.session_state.profile_with_battery['datetime'].dt.date >= start) & 
-                (st.session_state.profile_with_battery['datetime'].dt.date <= end)]
-        )
-        # ax3.plot(temp_df['datetime'], temp_df['grid_kwh_usage'], label='Grid Usage')
-        ax3.plot(temp_df['datetime'], temp_df['scaled_kwh_usage'], label='Original Grid Usage')
-        ax3.plot(
-            temp_df['datetime'], 
-            temp_df['grid_kwh_usage'], 
-            label='New Grid Usage With Battery', 
-            linestyle='dotted'
-            )
-        fig3.autofmt_xdate()
-        ax3.legend()
-        st.pyplot(fig3)
 
 if __name__ == "__main__":
     main()
