@@ -6,7 +6,6 @@ import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 from matplotlib.ticker import FuncFormatter
-
 import logging
 
 from src.data_processing import get_usage_data, get_max_heat_demand, ElectricityConfig
@@ -15,7 +14,7 @@ from src.cost_calculations import calculate_projections, inflation_adjusted_cost
 from src.breakeven_plots import fixed_vs_variable_breakeven, variable_vs_variable_optimised_breakeven
 from src.raw_data_plots import plot_raw_data
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Load configuration from YAML
 @st.cache_data
@@ -35,7 +34,7 @@ def reload_data():
     st.session_state.config.SCALE_FACTOR = st.session_state.scale_factor
     logging.info(f"Reload triggered, scale factor: {st.session_state.scale_factor}")
     _, st.session_state.usage_data = get_usage_data(config=st.session_state.config)
-    st.session_state.usage_data = st.session_state.usage_data[st.session_state.usage_data.datetime < '2025-12-01']
+    # st.session_state.usage_data = st.session_state.usage_data[st.session_state.usage_data.datetime < '2025-12-01']
     st.session_state.usage_data['c_variable_total_cost_with_battery'] = 0.0
 
 def manual_capex_update():
@@ -46,12 +45,16 @@ def manual_capex_update():
         + st.session_state.config.HEAT_PUMP_SIZE_KW * st.session_state.config.HEAT_PUMP_COST_PER_KW
     )
 
+def add_tax(amount: float) -> float:
+    """Function to add tax to a given amount based on the configuration tax rate."""
+    tax_rate = st.session_state.config.TAX_RATE if 'config' in st.session_state else 0.19
+    return amount * (1 + tax_rate)
 
 def main():
     st.set_page_config(page_title="Electricity Cost Model", layout="wide")
     if 'usage_data' not in st.session_state:
         _, st.session_state.usage_data = get_usage_data()
-        st.session_state.usage_data = st.session_state.usage_data[st.session_state.usage_data.datetime < '2025-12-01']
+        # st.session_state.usage_data = st.session_state.usage_data[st.session_state.usage_data.datetime < '2025-12-01']
         st.session_state.usage_data['c_variable_total_cost_with_battery'] = 0.0
     
     if 'config' not in st.session_state:
@@ -94,9 +97,6 @@ def main():
     if 'inflation_adjusted_costs' not in st.session_state:
         st.session_state.inflation_adjusted_costs = {}
 
-    if 'fixed_battery_size' not in st.session_state:
-        st.session_state.fixed_battery_size = False
-
     if 'fixed_heat_pump_size' not in st.session_state:
         st.session_state.fixed_heat_pump_size = False
 
@@ -108,6 +108,9 @@ def main():
     
     if "hp_cost_per_kw" not in st.session_state:
         st.session_state.hp_cost_per_kw = st.session_state.config.HEAT_PUMP_COST_PER_KW
+
+    if 'optimisation_message' not in st.session_state:
+        st.session_state.optimisation_message = '(Fixed)'
     
     # Sidebar for navigation
     st.sidebar.title("Navigation")
@@ -130,9 +133,10 @@ def show_cost_modelling(config):
     st.title("Cost Modelling")
     
     st.header("Configuration Parameters")
-    st.session_state.fixed_heat_pump_size = st.toggle("Fix Heat Pump Size", value=False, help="Sets a fixed heat pump size rather than optimising it. Will set it to the maximum heat demand.")
-    st.session_state.fixed_battery_size = st.toggle("Fix TES Size", value=False, help="Enables you to set the TES size manually rather than optimising it.")
-    
+    st.session_state.fixed_heat_pump_size = st.toggle(
+        "Manually Set Heat Pump & TES Size", 
+        value=False, 
+        help="Sets a fixed heat pump & TES size rather than optimising it. The default value for the heat pump size is the the maximum heat demand.")
     # Create three columns for better layout
     col1, col2, col3 = st.columns(3)
     
@@ -188,21 +192,29 @@ def show_cost_modelling(config):
             "Heat Pump Size kW", 
             value=config.HEAT_PUMP_SIZE_KW,
             step=10.0,
-            help="The max size of the heat pump in kW. The default value is the maximum heat demand.",
+            help="The max size of the heat pump in kW. The default value is the maximum heat demand in the input data.",
             disabled= not st.session_state.fixed_heat_pump_size,
+        )
+        st.session_state.config.MAX_TES_SIZE_KWH = st.number_input(
+            "Max TES Size (kWh)", 
+            value=config.MAX_TES_SIZE_KWH,
+            step=50,
+            help="Maximum TES size to consider during optimisation.",
+            disabled = st.session_state.fixed_heat_pump_size,
         )
         st.session_state.config.TES_SIZE_KWH = st.number_input(
             "TES Size (kWh)", 
             value=config.TES_SIZE_KWH,
             step=5.0,
-            disabled= not st.session_state.fixed_battery_size,
+            disabled= not st.session_state.fixed_heat_pump_size,
+            help="The total storage capacity of the TES in kWh.",
         )
         st.session_state.config.TES_POWER = st.number_input(
             "TES Power (kW)", 
             value=config.TES_POWER,
             step=5.0,
-            help="Maximum power the TES can charge or discharge within an hour. This is set to half the maximum heat demand by default.",
-            disabled = not st.session_state.fixed_battery_size,
+            help="Maximum power the TES can charge or discharge within an hour.",
+            disabled = not st.session_state.fixed_heat_pump_size,
         )
    
     
@@ -264,7 +276,6 @@ def show_cost_modelling(config):
             value=config.TAX_RATE,
             step=0.01,
             format="%.2f",
-            disabled=True,
         )
     
     with col5:  
@@ -299,27 +310,27 @@ def show_cost_modelling(config):
         st.session_state.config = ElectricityConfig() # resets to default values
         st.rerun()
     
-    if st.button("Save Configuration", disabled=True):
-        with open(f"config/config_{datetime.now().strftime('%Y%m%d_%H%M%S')}.yaml", "w") as f:
-            yaml_data = {
-                "ANNUAL_USAGE": st.session_state.config.ANNUAL_USAGE,
-                "BASELINE_USAGE_MWH": st.session_state.config.BASELINE_USAGE_MWH,
-                "FLAT_RATE_C_PER_KWH": st.session_state.config.FLAT_RATE_C_PER_KWH,
-                "BATTERY_INEFFICIENCY_FACTOR": st.session_state.config.BATTERY_INEFFICIENCY_FACTOR,
-                "NETWORK_USAGE": st.session_state.config.NETWORK_USAGE,
-                "TAX_RATE": st.session_state.config.TAX_RATE,
-                "ELECTRICITY_TAX": st.session_state.config.ELECTRICITY_TAX,
-                "ADDITIONAL_COST": st.session_state.config.ADDITIONAL_COST,
-                "KONZESSION": st.session_state.config.KONZESSION,
-                "CHP_SURCHARGE": st.session_state.config.CHP_SURCHARGE,
-                "TES_COST_PER_KWH": st.session_state.config.TES_COST_PER_KWH,
-                "OPEX_PERCENT_OF_CAPEX": st.session_state.config.OPEX_PERCENT_OF_CAPEX,
-                "TES_SIZE_KWH": st.session_state.config.TES_SIZE_KWH,
-                "TES_POWER": st.session_state.config.TES_POWER,
-                "INFLATION_RATE": st.session_state.config.INFLATION_RATE
-            }
-            yaml.dump(yaml_data, f)
-        st.success(f"Configuration saved to config/config_{datetime.now().strftime('%Y%m%d_%H%M%S')}.yaml")
+    # if st.button("Save Configuration", disabled=True):
+    #     with open(f"config/config_{datetime.now().strftime('%Y%m%d_%H%M%S')}.yaml", "w") as f:
+    #         yaml_data = {
+    #             "ANNUAL_USAGE": st.session_state.config.ANNUAL_USAGE,
+    #             "BASELINE_USAGE_MWH": st.session_state.config.BASELINE_USAGE_MWH,
+    #             "FLAT_RATE_C_PER_KWH": st.session_state.config.FLAT_RATE_C_PER_KWH,
+    #             "BATTERY_INEFFICIENCY_FACTOR": st.session_state.config.BATTERY_INEFFICIENCY_FACTOR,
+    #             "NETWORK_USAGE": st.session_state.config.NETWORK_USAGE,
+    #             "TAX_RATE": st.session_state.config.TAX_RATE,
+    #             "ELECTRICITY_TAX": st.session_state.config.ELECTRICITY_TAX,
+    #             "ADDITIONAL_COST": st.session_state.config.ADDITIONAL_COST,
+    #             "KONZESSION": st.session_state.config.KONZESSION,
+    #             "CHP_SURCHARGE": st.session_state.config.CHP_SURCHARGE,
+    #             "TES_COST_PER_KWH": st.session_state.config.TES_COST_PER_KWH,
+    #             "OPEX_PERCENT_OF_CAPEX": st.session_state.config.OPEX_PERCENT_OF_CAPEX,
+    #             "TES_SIZE_KWH": st.session_state.config.TES_SIZE_KWH,
+    #             "TES_POWER": st.session_state.config.TES_POWER,
+    #             "INFLATION_RATE": st.session_state.config.INFLATION_RATE
+    #         }
+    #         yaml.dump(yaml_data, f)
+    #     st.success(f"Configuration saved to config/config_{datetime.now().strftime('%Y%m%d_%H%M%S')}.yaml")
     
     st.markdown("---")
     
@@ -329,7 +340,7 @@ def show_cost_modelling(config):
     if st.button("Optimize Costs"):
         with st.spinner("Running optimization. This will take a moment..."):
 
-            if not st.session_state.fixed_battery_size:
+            if not st.session_state.fixed_heat_pump_size:
                 st.session_state.optimisation_results : BatteryDispatchResult = solve_tes_dispatch_pulp( # type: ignore
                     price=st.session_state.usage_data['c_variable_and_fixed_per_kwh'],
                     demand=st.session_state.usage_data['scaled_kwh_usage'],
@@ -360,7 +371,7 @@ def show_cost_modelling(config):
                 st.session_state.usage_data['c_variable_total_cost_without_battery'] # + battery_capex
 
             )
-
+            logging.info(f"usage_date min_date: {st.session_state.usage_data['datetime'].min()}, max_date: {st.session_state.usage_data['datetime'].max()}")
             # Project this date investment_period years into the future
             st.session_state.breakeven = calculate_projections(
                 st.session_state.usage_data, 
@@ -368,6 +379,8 @@ def show_cost_modelling(config):
                 st.session_state.optimisation_results.heat_pump_size, # type: ignore
                 config=st.session_state.config,
             )
+
+            st.session_state.optimisation_message = '(Optimised)'
 
         # When we optimise for the cost whilst also optimising the battery size, this isn't needed 
         # st.session_state.optimisation_results_with_battery = calculate_cost_with_battery(
@@ -396,21 +409,25 @@ def show_cost_modelling(config):
 
         st.success("Optimization complete!")
 
-    st.write(f"Inflation adjusted cost for **{st.session_state.investment_duration_years} years**. These figures do not include tax.")
+    st.write(f"Inflation adjusted cost for **{st.session_state.investment_duration_years} years**")
     col_result1, col_result2 = st.columns(2)
+    
+    #######################
+    ### --- Metrics --- ###
+    #######################
 
     with col_result1:
         st.metric(
             label="Gas Heating Cost",
             value=(f"""
-                {inflation_adjusted_cost(
+                {add_tax(inflation_adjusted_cost(
                     st.session_state.usage_data['scaled_kwh_usage'].sum() * st.session_state.config.GAS_HEATING_C_PER_KWH * st.session_state.config.GAS_CONVERSION_RATIO / 100,
                     st.session_state.investment_duration_years,
                     st.session_state.config.INFLATION_RATE
-                ):,.0f} €"""
+                )):,.0f} €"""
             ),
             delta=None,
-            help="Usage of gas heating system in kWh over the period."
+            help="Usage of gas heating system over the investment duration. This does not require any CAPEX."
         )
 
     with col_result2:
@@ -424,8 +441,10 @@ def show_cost_modelling(config):
 
         st.metric(
             label="Flat Rate Cost with Heat Pump (Non Optimised)",
-            value=f"{(base_cost + capex):,.0f} €",
-            help="This is the inflation adjusted electricity cost for the period based on a flat rate without any optimisation.",
+            value=f"{add_tax(base_cost + capex):,.0f} €",
+            help=("This is the inflation adjusted electricity cost for the period based on a flat rate without any optimisation. "
+                  "It includes the cost of a heat pump and TES if the sizes are set in the configuration."
+                  ),
         )
 
 
@@ -440,7 +459,11 @@ def show_cost_modelling(config):
             st.metric(
                 label="Flat Rate Cost with Heat Pump (Optimised)",
                 value=f"N/A",
-                help="This is the inflation adjusted electricity cost for the period based on a flat rate with the storage and heat pump optimised.",
+                help=(
+                    "This is the inflation adjusted electricity cost for the period based on a flat " 
+                    "rate with the storage and heat pump optimised. The storage and heat pump are optimised here based on the "
+                    "variable rate electricity cost, so this is an estimate only."
+                )
             )
         else:
             capex = (
@@ -449,8 +472,12 @@ def show_cost_modelling(config):
             )
             st.metric(
                 label="Flat Rate Cost with Heat Pump (Optimised)",
-                value=f"{(base_cost + capex):,.0f} €",
-                help="This is the inflation adjusted electricity cost for the period based on a flat rate with the storage and heat pump optimised.",
+                value=f"{add_tax(base_cost + capex):,.0f} €",
+                help=(
+                    "This is the inflation adjusted electricity cost for the period based on a flat " 
+                    "rate with the storage and heat pump optimised. The storage and heat pump are optimised here based on the "
+                    "variable rate electricity cost, so this is an estimate only."
+                )
             )
 
 
@@ -462,16 +489,16 @@ def show_cost_modelling(config):
     with col_result1:
         st.metric(
             label="Variable Rate Cost with Heat Pump (Non Optimised)",
-            value=(f"""{inflation_adjusted_cost(
+            value=(f"""{add_tax(inflation_adjusted_cost(
                 st.session_state.usage_data['c_total_variable_cost'].sum()/100, 
                 st.session_state.investment_duration_years, 
                 st.session_state.config.INFLATION_RATE
-                ) + st.session_state.non_optimised_capex :,.0f} €"""
+                ) + st.session_state.non_optimised_capex) :,.0f} €"""
             ),
             delta=None,
             help=(
-                "This is the inflation adjusted variable cost for the period when a Heat Pump is purchased and the user "
-                "simply switches to a variable tariff."
+                "This is the inflation adjusted variable electricity cost along with a Heat Pump with a fixed size for the period. "
+                "This represents the cost without any optimisation, but with a variable tariff."
             )
         )
 
@@ -479,7 +506,7 @@ def show_cost_modelling(config):
         st.metric(
             label="Variable Rate Cost with Heat Pump (Optimised)",
             value=(
-                f"{st.session_state.inflation_adjusted_costs['optimised_inflation_adjusted_with_battery_cost']:,.0f} €" 
+                f"{add_tax(st.session_state.inflation_adjusted_costs['optimised_inflation_adjusted_with_battery_cost']):,.0f} €" 
                 if st.session_state.inflation_adjusted_costs else "N/A"
             ),
             delta=None,
@@ -490,23 +517,23 @@ def show_cost_modelling(config):
 
     with col_result1:
         st.metric(
-            label="Heat Pump size (kW)",
+            label=f"Heat Pump size {st.session_state.optimisation_message} kW",
             value=(
                 f"{st.session_state.optimisation_results.heat_pump_size:,.0f} kW" 
                 if st.session_state.optimisation_results.heat_pump_size is not None else 
                 f"{st.session_state.config.HEAT_PUMP_SIZE_KW:,.0f} kW"
             ),
             delta=None,
-            help="This is the Heat Pump size based on the current configuration. This is either optimised or fixed depending on the settings above."
+            help="This is the Heat Pump size. The label indicates whether the size is optimised or fixed."
         )
     
     with col_result2:
         st.metric(
             label="Heat Pump Capex",
             value=(
-                f"{st.session_state.optimisation_results.heat_pump_size * st.session_state.config.HEAT_PUMP_COST_PER_KW:,.0f} €" 
+                f"{add_tax(st.session_state.optimisation_results.heat_pump_size * st.session_state.config.HEAT_PUMP_COST_PER_KW):,.0f} €" 
                 if st.session_state.optimisation_results.heat_pump_size is not None else 
-                f"{st.session_state.config.HEAT_PUMP_SIZE_KW * st.session_state.config.HEAT_PUMP_COST_PER_KW:,.0f} €"
+                f"{add_tax(st.session_state.config.HEAT_PUMP_SIZE_KW * st.session_state.config.HEAT_PUMP_COST_PER_KW):,.0f} €"
             ),
             delta=None,
             help="This is the capital expenditure (Capex) for the Heat Pump."
@@ -516,24 +543,24 @@ def show_cost_modelling(config):
 
     with col_result1:
         st.metric(
-            label="Optimised TES size (kWh)",
+            label=f"TES size {st.session_state.optimisation_message} kWh",
             value=(
                 f"{st.session_state.optimisation_results.tes_size:,.0f} kWh" 
                 if st.session_state.optimisation_results.tes_size is not None else "N/A"
             ),
             delta=None,
-            help="This is the optimised TES size based on the current configuration. If the TES size is 0 kWh this indicates that a TES is not cost effective under the current parameters."
+            help="This is the TES size. The label indicates whether the size is optimised or fixed."
         )
     
     with col_result2:
         st.metric(
             label="TES Capex",
             value=(
-                f"{st.session_state.optimisation_results.tes_size * st.session_state.config.TES_COST_PER_KWH:,.0f} €" 
+                f"{add_tax(st.session_state.optimisation_results.tes_size * st.session_state.config.TES_COST_PER_KWH):,.0f} €" 
                 if st.session_state.optimisation_results.tes_size is not None else "N/A"
             ),
             delta=None,
-            help="This is the capital expenditure (Capex) for the optimised TES size."
+            help="This is the capital expenditure (Capex) for the TES size."
         )
         
     col_result1, col_result2 = st.columns(2)    
@@ -547,12 +574,13 @@ def show_cost_modelling(config):
                     st.session_state.config.INFLATION_RATE
                     )
             )
+            savings_vs_fixed_perc = add_tax(savings_vs_fixed_perc)
         else:
             savings_vs_fixed_perc = "N/A"
 
         st.metric(
-            label="**Savings:** Variable rate with battery vs flat cost",
-            value=(f"{st.session_state.inflation_adjusted_costs['optimised_inflation_adjusted_vs_flat_cost_delta']:,.0f} €"
+            label="**Savings:** Variable rate with TES vs flat cost",
+            value=(f"{add_tax(st.session_state.inflation_adjusted_costs['optimised_inflation_adjusted_vs_flat_cost_delta']):,.0f} €"
                    if st.session_state.inflation_adjusted_costs else "N/A"
                    ),
             delta=(
@@ -560,8 +588,8 @@ def show_cost_modelling(config):
                 if st.session_state.inflation_adjusted_costs else "N/A"
                 )
                 ,
-                help=("This shows the difference between the optimized variable cost and optimised TES and Heat Pump CAPEX included and the flat "
-                      "rate cost with non-optimised Heat Pump and TES sizes over the investment duration."
+                help=("This shows the difference between the optimized variable energy usage with optimised TES and Heat Pump CAPEX "
+                      "included compared with the flat rate cost with non-optimised Heat Pump and TES sizes over the investment duration."
                 )
         )
     
@@ -575,12 +603,13 @@ def show_cost_modelling(config):
                     st.session_state.config.INFLATION_RATE
                     )
             )
+            savings_vs_variable_perc = add_tax(savings_vs_variable_perc)
         else:
             savings_vs_variable_perc = "N/A"
         st.metric(
-            label="**Savings:** Variable rate with battery vs. variable rate alone",
+            label="**Savings:** Variable rate with TES vs. variable rate alone",
             value=(
-                    f"{st.session_state.inflation_adjusted_costs['optimised_inflation_adjusted_vs_variable_cost_delta']:,.0f} €"
+                    f"{add_tax(st.session_state.inflation_adjusted_costs['optimised_inflation_adjusted_vs_variable_cost_delta']):,.0f} €"
                     if st.session_state.inflation_adjusted_costs else "N/A"
                 ),
             delta=(
@@ -588,15 +617,15 @@ def show_cost_modelling(config):
                     if st.session_state.inflation_adjusted_costs else "N/A"
                 ),
             help=(
-                "This shows the difference between the optimized variable cost with TES and Heat Pump CAPEX "
-                "included over the investment duration."
+                "This shows the difference between the optimized variable electricity usage with TES and Heat Pump CAPEX "
+                "compared with the non-optimised variable rate with non-optimised TES and Heat Pump sizes over the investment duration."
             )
         )
     
     st.markdown("---")
     
     # Breakeven graph
-    st.header("Breakeven Analysis", help=(
+    st.header("Cost Comparison Analysis", help=(
         "These graphs compare the optimised costs over a time window with the the non-optimised costs. Optimised here means that "
         "the TES size and heat pump size have been optimised to give the lowest cost over the investment duration. "
         "Non-optimised means that the default values from the configuration file are used without any optimisation. "
@@ -610,7 +639,6 @@ def show_cost_modelling(config):
         projections["c_variable_total_cost_with_battery_cumulative"] = projections["c_variable_total_cost_with_battery_cumulative"] /100
         projections["c_total_variable_cost_cumulative"] = projections["c_total_variable_cost_cumulative"] /100
         projections["c_total_flat_cost_cumulative"] = projections["c_total_flat_cost_cumulative"]/100
-        projections = projections[projections['datetime'] >= '2025-01-01']
 
         with flat_vs_battery_tab:
            fixed_vs_variable_breakeven(projections)

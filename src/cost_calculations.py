@@ -32,7 +32,6 @@ def calculate_projections(usage_df: pd.DataFrame, tes_size: float, heat_pump_siz
 
     dt_index = pd.date_range(
         start=monthly_costs["datetime"].min(),
-        # end=monthly_costs["datetime"].max() + pd.Timedelta(weeks=(52*config.INVESTMENT_DURATION_YEARS)+2),  
         end=monthly_costs["datetime"].max() + pd.DateOffset(years=config.INVESTMENT_DURATION_YEARS-1),
         freq="MS"
     )
@@ -47,7 +46,7 @@ def calculate_projections(usage_df: pd.DataFrame, tes_size: float, heat_pump_siz
     )
 
     for d in monthly_costs_extended.datetime:
-        if d <= monthly_costs_extended["datetime"].max() - pd.Timedelta(weeks=52):
+        if d <= monthly_costs_extended["datetime"].max() - pd.DateOffset(years=1):
             next_year = (d + pd.DateOffset(years=1)).to_period('M').to_timestamp()
             
             # Get scalar values instead of Series
@@ -83,7 +82,10 @@ def inflation_adjusted_cost(cost: float, years: int, inflation_rate: float) -> f
         float: Inflation-adjusted cost.
     """
     # We take years - 1 because we already have the first year
-    return cost * ((1 + inflation_rate) ** years - 1) / inflation_rate
+    if inflation_rate > 0:
+        return cost * ((1 + inflation_rate) ** years - 1) / inflation_rate
+    else:
+        return cost * years
 
 def calculate_inflation_adjusted_costs(usage_data: pd.DataFrame, optimisation_results: BatteryDispatchResult, investment_duration_years: int, config: ElectricityConfig) -> dict[str, float]:
         optimised_inflation_adjusted_cost_without_battery = inflation_adjusted_cost(

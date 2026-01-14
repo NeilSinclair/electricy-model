@@ -1,11 +1,18 @@
 import pandas as pd
 from datetime import datetime as dt
 import matplotlib.pyplot as plt
-import holidays
+import logging
 import numpy as np
 
 from dataclasses import dataclass
 import yaml
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
 
 @dataclass
 class ElectricityConfig:
@@ -14,7 +21,7 @@ class ElectricityConfig:
     FLAT_RATE_C_PER_KWH: float = 30.0
 
     # Battery parameters
-    BATTERY_INEFFICIENCY_FACTOR: float = 0.95
+    BATTERY_INEFFICIENCY_FACTOR: float = 0.98
 
     # Additional costs (c/kWh)
     NETWORK_USAGE: float = 8.71
@@ -25,18 +32,19 @@ class ElectricityConfig:
     CHP_SURCHARGE: float = 0.45
 
     # Battery investment
-    TES_COST_PER_KWH: float = 200.0
+    TES_COST_PER_KWH: float = 65.0
     OPEX_PERCENT_OF_CAPEX: float = 0.05
 
     # Heat Pump parameters
     HEAT_PUMP_COP: float = 3.5
-    HEAT_PUMP_COST_PER_KW: float = 1800.0
+    HEAT_PUMP_COST_PER_KW: float = 2500.0
     HEAT_PUMP_SIZE_KW: float = 100.0
     HEAT_PUMP_OUTPUT_KW: float = 50.0 
 
     # Battery size
     TES_SIZE_KWH: float = 120.0
     TES_POWER: float = 50.0
+    MAX_TES_SIZE_KWH: int = 500
 
     # Other
     INFLATION_RATE: float = 0.02
@@ -69,6 +77,8 @@ def process_heat_energy_profile(data_path: str = 'data/heat_data.csv') -> pd.Dat
 
 def process_day_ahead_data(df_hourly: pd.DataFrame, data_path: str = 'data/day_ahead_1yr.csv') -> pd.DataFrame:
     """Function which processes raw day-ahead price data and merges with hourly energy profile
+
+    Data source: https://www.smard.de/en/downloadcenter/download-market-data/
     
     The source of this data is ... 
     """
@@ -79,6 +89,8 @@ def process_day_ahead_data(df_hourly: pd.DataFrame, data_path: str = 'data/day_a
     day_ahead.columns = ["start_date", "end_date", "de_price", "neighbour_price"]
     day_ahead["start_date"] = pd.to_datetime(day_ahead["start_date"], format="%b %d, %Y %I:%M %p")
     day_ahead["end_date"] = pd.to_datetime(day_ahead["end_date"], format="%b %d, %Y %I:%M %p")
+
+    logger.info(f"Day ahead data start_date: {day_ahead['start_date'].min()}, end_date: {day_ahead['start_date'].max()}")
 
     df_combined = df_hourly.merge(
         day_ahead[["start_date", "de_price", "neighbour_price"]],
@@ -135,6 +147,8 @@ def calculate_usage_and_price(df_hourly: pd.DataFrame, day_ahead_hourly: pd.Data
 
     df_usage_and_price["c_per_kwh_flat_rate_cost"] = config.FLAT_RATE_C_PER_KWH
     df_usage_and_price["c_total_flat_cost"] = (df_usage_and_price["c_per_kwh_flat_rate_cost"] * df_usage_and_price["scaled_kwh_usage"] / config.HEAT_PUMP_COP)
+
+    logger.info(f"Usage data range: {df_usage_and_price['datetime'].min().strftime('%Y-%m-%d %H:%M:%S')} to {df_usage_and_price['datetime'].max().strftime('%Y-%m-%d %H:%M:%S')}")
 
     return df_usage_and_price
 

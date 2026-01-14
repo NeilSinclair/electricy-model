@@ -2,6 +2,12 @@ import plotly.graph_objects as go
 import pandas as pd
 import streamlit as st
 
+def add_tax_be(amount: float) -> float:
+    """Function to add tax to a given amount based on the configuration tax rate."""
+    tax_rate = st.session_state.config.TAX_RATE if 'config' in st.session_state else 0.19
+    return amount * (1 + tax_rate)
+
+
 def fixed_vs_variable_breakeven(projections: pd.DataFrame) -> None:
     breakeven_point = projections[
         projections.c_total_flat_cost_cumulative >=
@@ -9,15 +15,15 @@ def fixed_vs_variable_breakeven(projections: pd.DataFrame) -> None:
     ]
 
     breakeven_date = None
-    if len(breakeven_point) > 0:
-        breakeven_date = breakeven_point.iloc[0]["datetime"]
+    # if len(breakeven_point) > 0:
+    #     breakeven_date = breakeven_point.iloc[0]["datetime"]
 
     fig = go.Figure()
 
     fig.add_trace(
         go.Scatter(
             x=projections["datetime"],
-            y=projections["c_total_flat_cost_cumulative"],
+            y=projections["c_total_flat_cost_cumulative"].apply(add_tax_be),
             mode="lines",
             name="Fixed Cost, Non-Optimised (Cumulative)",
             hovertemplate="%{x|%Y-%m-%d}<br>%{y:,.0f}€<extra></extra>",
@@ -28,7 +34,7 @@ def fixed_vs_variable_breakeven(projections: pd.DataFrame) -> None:
     fig.add_trace(
         go.Scatter(
             x=projections["datetime"],
-            y=projections["c_variable_total_cost_with_battery_cumulative"],
+            y=projections["c_variable_total_cost_with_battery_cumulative"].apply(add_tax_be),
             mode="lines",
             name="Variable Cost, Optimised (Cumulative)",
             hovertemplate="%{x|%Y-%m-%d}<br>%{y:,.0f}€<extra></extra>",
@@ -78,15 +84,15 @@ def variable_vs_variable_optimised_breakeven(projections: pd.DataFrame) -> None:
     ]
 
     breakeven_date = None
-    if len(breakeven_point) > 0:
-        breakeven_date = breakeven_point.iloc[0]["datetime"]
+    # if len(breakeven_point) > 0:
+    #     breakeven_date = breakeven_point.iloc[0]["datetime"]
 
     fig = go.Figure()
 
     fig.add_trace(
         go.Scatter(
             x=projections["datetime"],
-            y=projections["c_total_variable_cost_cumulative"],
+            y=projections["c_total_variable_cost_cumulative"].apply(add_tax_be),
             mode="lines",
             name="Variable Cost, Non-Optimised (Cumulative)",
             hovertemplate="%{x|%Y-%m-%d}<br>%{y:,.0f}€<extra></extra>",
@@ -97,7 +103,7 @@ def variable_vs_variable_optimised_breakeven(projections: pd.DataFrame) -> None:
     fig.add_trace(
         go.Scatter(
             x=projections["datetime"],
-            y=projections["c_variable_total_cost_with_battery_cumulative"],
+            y=projections["c_variable_total_cost_with_battery_cumulative"].apply(add_tax_be),
             mode="lines",
             name="Variable Cost, Optimised (Cumulative)",
             hovertemplate="%{x|%Y-%m-%d}<br>%{y:,.0f}€<extra></extra>",
