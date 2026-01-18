@@ -47,7 +47,7 @@ This application enables users to:
 ```bash
 # Clone the repository
 git clone <repository-url>
-cd electricy-model
+cd electricity-model
 
 # Run the application (uv will handle dependencies automatically)
 uv run streamlit run app.py
@@ -69,7 +69,7 @@ streamlit run app.py
 ## Project Structure
 
 ```
-electricy-model/
+electricity-model/
 ├── app.py                      # Main Streamlit application
 ├── requirements.txt            # Python dependencies
 ├── Dockerfile                  # Docker configuration
@@ -177,7 +177,7 @@ The application expects three CSV files in the `data/` directory:
 - Day-ahead electricity market prices
 - Date format: "MMM DD, YYYY HH:MM AM/PM"
 - Data source: https://www.smard.de/en/downloadcenter/download-market-data/ 
-- Data info: German day ahead electricity prices from 01.01.2025 to 01.01.2026 at 15 minute fequency downloaded as .csv, renamed as day_ahead_1yr.csv and put into the `data/` folder
+- Data info: German day ahead electricity prices from 01.01.2025 to 01.01.2026 at 15 minute frequency downloaded as .csv, renamed as day_ahead_1yr.csv and put into the `data/` folder
 
 ## Technical Details
 
