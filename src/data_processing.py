@@ -48,7 +48,7 @@ class ElectricityConfig:
     # Other
     ELECTRICITY_INFLATION_RATE: float = 0.02
     GAS_INFLATION_RATE: float = 0.02
-    INVESTMENT_DURATION_YEARS: int = 10
+    INVESTMENT_DURATION_YEARS: int = 15
 
     # Gas heating
     GAS_HEATING_C_PER_KWH: float = 12.0
