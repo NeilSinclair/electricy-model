@@ -25,7 +25,6 @@ This application enables users to:
 - Optimizes for minimum total cost including:
   - Energy costs from grid electricity
   - Capital expenditure (CAPEX) for TES and heat pump
-  - Operating expenditure (OPEX) as percentage of CAPEX
 - Considers heat pump coefficient of performance (COP)
 - Enforces physical constraints (charge/discharge limits, state of charge)
 
@@ -118,9 +117,8 @@ The application is configured via `config/config.yaml`. Key parameters include:
 
 ### Financial Parameters
 - `TAX_RATE`: VAT or sales tax rate (default: 0.19)
-- `INFLATION_RATE`: Annual inflation rate (default: 0.02)
+- `ELECTRICITY_INFLATION_RATE`: Annual inflation rate (default: 0.02)
 - `INVESTMENT_DURATION_YEARS`: Analysis period (default: 10)
-- `OPEX_PERCENT_OF_CAPEX`: Operating costs as % of capital costs
 
 ## Usage
 
@@ -220,7 +218,7 @@ Where:
 
 **Total System Cost:**
 ```
-Total = Energy Cost + TES CAPEX + Heat Pump CAPEX + OPEX
+Total = Energy Cost + TES CAPEX + Heat Pump CAPEX
 ```
 
 ## Docker Support

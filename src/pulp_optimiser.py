@@ -99,7 +99,7 @@ def solve_tes_dispatch_pulp(
     # solver = pl.HiGHS_CMD(msg=False)
     model.solve(pl.PULP_CBC_CMD(msg=False))
     status = pl.LpStatus[model.status]
-    logging.info("Solver status:", status)
+    logging.info(f"Solver status: {status}")
 
     logging.info(f"TES Size = {pl.value(tes_size)}")
     logging.info(f"TES Capex: {round(pl.value(tes_size) * config.TES_COST_PER_KWH ):,.0f} €") # type: ignore

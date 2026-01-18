@@ -53,7 +53,7 @@ def plot_raw_data(
     fig2, ax2 = plt.subplots(figsize=(12, 4))
     for month in months_in_data:
         month_data = hourly_monthly_avg_usage[hourly_monthly_avg_usage['month_name'] == month]
-        ax2.plot(month_data['hour_of_day'], month_data['scaled_kwh_usage'], 
+        ax2.plot(month_data['hour_of_day'], month_data['scaled_kwh_heat_usage'], 
                 marker='o', label=month, linewidth=2)
 
     ax2.set_xlabel('Hour of Day')
@@ -105,7 +105,7 @@ def plot_raw_data(
         fig.add_trace(
             go.Scatter(
                 x=df_usage["hour_of_day"],
-                y=df_usage["scaled_kwh_usage"],
+                y=df_usage["scaled_kwh_heat_usage"],
                 name=f"{month} - Consumption",
                 yaxis="y2",
                 mode="lines+markers",
@@ -164,7 +164,7 @@ def plot_raw_data(
         # ax3.plot(temp_df['datetime'], temp_df['grid_kwh_usage'], label='Grid Usage')
         ax3.plot(
             temp_df['datetime'], 
-            temp_df['scaled_kwh_usage'] / st.session_state.config.HEAT_PUMP_COP, 
+            temp_df['scaled_kwh_heat_usage'] / st.session_state.config.HEAT_PUMP_COP, 
             label='Original Grid Usage'
             )
         ax3.plot(
