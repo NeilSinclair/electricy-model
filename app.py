@@ -152,14 +152,15 @@ def show_cost_modelling(config):
         st.session_state.config.FLAT_RATE_C_PER_KWH = st.number_input(
             "Flat Rate (c/kWh)", 
             value=config.FLAT_RATE_C_PER_KWH,
-            step=1.0
+            step=1.0,
+            help="Flat electricity rate per kWh. This value should already include Mwst (tax)."
         )
         st.session_state.config.GAS_HEATING_C_PER_KWH = st.number_input(
             "Gas Heating Cost (c/kWh)", 
             value=config.GAS_HEATING_C_PER_KWH,
             step=0.1,
             format="%.2f",
-            help="Cost of gas heating per kWh."
+            help="Cost of gas heating per kWh. This value should already include Mwst (tax)."
         )
         st.number_input(
             "Heat Pump COP", 
@@ -385,15 +386,17 @@ def show_cost_modelling(config):
     ### --- Metrics --- ###
     #######################
 
+    # Note: Tax (Mwst) is already part of the core gas and flat electricity costs
+
     with col_result1:
         st.metric(
             label="Gas Heating Cost",
             value=(f"""
-                {add_tax(inflation_adjusted_cost(
+                {inflation_adjusted_cost(
                     st.session_state.usage_data['scaled_kwh_heat_usage'].sum() * st.session_state.config.GAS_HEATING_C_PER_KWH / 100,
                     st.session_state.investment_duration_years,
                     st.session_state.config.GAS_INFLATION_RATE
-                )):,.0f} €"""
+                ):,.0f} €"""
             ),
             delta=None,
             help="Usage of gas heating system over the investment duration. This does not require any CAPEX."
@@ -410,7 +413,7 @@ def show_cost_modelling(config):
 
         st.metric(
             label="Flat Rate Cost with Heat Pump (Non Optimised)",
-            value=f"{add_tax(base_cost + capex):,.0f} €",
+            value=f"{base_cost + add_tax(capex):,.0f} €",
             help=("This is the inflation adjusted electricity cost for the period based on a flat rate without any optimisation. "
                   "It includes the cost of a heat pump and TES if the sizes are set in the configuration."
                   ),
@@ -441,7 +444,7 @@ def show_cost_modelling(config):
             )
             st.metric(
                 label="Flat Rate Cost with Heat Pump (Optimised)",
-                value=f"{add_tax(base_cost + capex):,.0f} €",
+                value=f"{base_cost + add_tax(capex):,.0f} €",
                 help=(
                     "This is the inflation adjusted electricity cost for the period based on a flat " 
                     "rate with the storage and heat pump optimised. The storage and heat pump are optimised here based on the "
@@ -611,6 +614,7 @@ def show_cost_modelling(config):
         projections["c_total_variable_cost_cumulative"] = projections["c_total_variable_cost_cumulative"] /100
         projections["c_total_flat_cost_cumulative"] = projections["c_total_flat_cost_cumulative"]/100
         projections["c_total_gas_cost_cumulative"] = projections["c_total_gas_cost_cumulative"]/100
+        projections["c_total_flat_cost_cumulative_no_capex"] = projections["c_total_flat_cost_cumulative_no_capex"]/100
 
         with gas_vs_battery_tab:
            gas_vs_variable_breakeven(projections)

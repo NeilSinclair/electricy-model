@@ -86,6 +86,9 @@ def calculate_projections(usage_df: pd.DataFrame, tes_size: float, heat_pump_siz
     monthly_costs_extended["c_total_flat_cost_cumulative"] = (
         monthly_costs_extended["c_total_flat_cost"].cumsum() + ((tes_capex_default + heat_pump_capex_default) * 100)
     )
+    monthly_costs_extended["c_total_flat_cost_cumulative_no_capex"] = (
+        monthly_costs_extended["c_total_flat_cost"].cumsum() 
+    )
 
     monthly_costs_extended["c_total_gas_cost_cumulative"] = (
         monthly_costs_extended["c_total_gas_cost"].cumsum()

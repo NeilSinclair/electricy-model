@@ -40,8 +40,10 @@ This application enables users to:
 ## Installation
 
 ### Prerequisites
-- Python 3.8 or higher
+- Python 3.11 or higher
 - [uv](https://github.com/astral-sh/uv) package manager (recommended) or pip
+
+This project uses `uv` for dependency management. Dependencies are defined in `requirements.txt` and will be installed automatically.
 
 ### Using uv (Recommended)
 ```bash

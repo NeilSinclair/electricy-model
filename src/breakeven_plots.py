@@ -10,7 +10,7 @@ def add_tax_be(amount: float) -> float:
 def gas_vs_variable_breakeven(projections: pd.DataFrame) -> None:
     breakeven_point = projections[
         projections.c_total_gas_cost_cumulative >=
-        projections.c_variable_total_cost_with_battery_cumulative
+        projections.c_variable_total_cost_with_battery_cumulative.apply(add_tax_be)
     ]
 
     breakeven_date = None
@@ -22,7 +22,7 @@ def gas_vs_variable_breakeven(projections: pd.DataFrame) -> None:
     fig.add_trace(
         go.Scatter(
             x=projections["datetime"],
-            y=projections["c_total_gas_cost_cumulative"].apply(add_tax_be),
+            y=projections["c_total_gas_cost_cumulative"],
             mode="lines",
             name="Gas Cost (Cumulative)",
             hovertemplate="%{x|%Y-%m-%d}<br>%{y:,.0f}€<extra></extra>",
@@ -78,8 +78,14 @@ def gas_vs_variable_breakeven(projections: pd.DataFrame) -> None:
 
 
 def fixed_vs_variable_breakeven(projections: pd.DataFrame) -> None:
+    
+    non_optimised_capex = (
+        st.session_state.config.TES_SIZE_KWH * st.session_state.config.TES_COST_PER_KWH + # type: ignore
+        st.session_state.config.HEAT_PUMP_SIZE_KW * st.session_state.config.HEAT_PUMP_COST_PER_KW # type: ignore
+    )
+    
     breakeven_point = projections[
-        projections.c_total_flat_cost_cumulative >=
+        projections["c_total_flat_cost_cumulative_no_capex"] + add_tax_be(non_optimised_capex) >=
         projections.c_variable_total_cost_with_battery_cumulative
     ]
 
@@ -92,7 +98,10 @@ def fixed_vs_variable_breakeven(projections: pd.DataFrame) -> None:
     fig.add_trace(
         go.Scatter(
             x=projections["datetime"],
-            y=projections["c_total_flat_cost_cumulative"].apply(add_tax_be),
+            y=(
+                projections["c_total_flat_cost_cumulative_no_capex"] + 
+                add_tax_be(non_optimised_capex)
+            ),
             mode="lines",
             name="Fixed Cost, Non-Optimised (Cumulative)",
             hovertemplate="%{x|%Y-%m-%d}<br>%{y:,.0f}€<extra></extra>",
