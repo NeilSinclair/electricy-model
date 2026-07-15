@@ -111,12 +111,24 @@ def inflation_adjusted_cost(cost: float, years: int, inflation_rate: float) -> f
         return cost * years
 
 def calculate_inflation_adjusted_costs(usage_data: pd.DataFrame, optimisation_results: BatteryDispatchResult, investment_duration_years: int, config: ElectricityConfig) -> dict[str, float]:
+        
+        baseline_inflation_adjusted_gas_cost = inflation_adjusted_cost(
+            usage_data['c_total_gas_cost'].sum()/100,
+            investment_duration_years,
+            config.GAS_INFLATION_RATE
+        )
+        
         optimised_inflation_adjusted_cost_without_battery = inflation_adjusted_cost(
             usage_data['c_variable_total_cost_without_battery'].sum(), 
             investment_duration_years, 
             config.ELECTRICITY_INFLATION_RATE
             ) 
         
+        optimised_inflation_adjusted_vs_gas_baseline_cost_delta = (
+             baseline_inflation_adjusted_gas_cost - optimised_inflation_adjusted_cost_without_battery
+        ) -  (optimisation_results.tes_size * config.TES_COST_PER_KWH) - (optimisation_results.heat_pump_size * config.HEAT_PUMP_COST_PER_KW)  # type: ignore
+    
+
         optimised_inflation_adjusted_cost_without_battery_delta = inflation_adjusted_cost(
             usage_data['c_total_flat_cost'].sum()/100 - usage_data['c_variable_total_cost_with_battery'].sum(), 
             investment_duration_years, 
@@ -146,10 +158,19 @@ def calculate_inflation_adjusted_costs(usage_data: pd.DataFrame, optimisation_re
             config.ELECTRICITY_INFLATION_RATE
             ) + ((config.TES_SIZE_KWH - optimisation_results.tes_size) * config.TES_COST_PER_KWH + (config.HEAT_PUMP_SIZE_KW - optimisation_results.heat_pump_size) * config.HEAT_PUMP_COST_PER_KW)  # type: ignore
         
+        non_optimised_variable_with_battery_cost = inflation_adjusted_cost(
+            usage_data['c_total_variable_cost'].sum()/100, 
+            investment_duration_years, 
+            config.ELECTRICITY_INFLATION_RATE
+            ) + (config.TES_SIZE_KWH * config.TES_COST_PER_KWH) + (config.HEAT_PUMP_SIZE_KW * config.HEAT_PUMP_COST_PER_KW)  # type: ignore
+        
         return {
+            "baseline_inflation_adjusted_gas_cost": baseline_inflation_adjusted_gas_cost,
+            "optimised_inflation_adjusted_vs_gas_baseline_cost_delta": optimised_inflation_adjusted_vs_gas_baseline_cost_delta,
             "optimised_inflation_adjusted_cost_without_battery": optimised_inflation_adjusted_cost_without_battery,
             "optimised_inflation_adjusted_cost_without_battery_delta": optimised_inflation_adjusted_cost_without_battery_delta,
             "optimised_inflation_adjusted_with_battery_cost": optimised_inflation_adjusted_with_battery_cost,
             "optimised_inflation_adjusted_vs_flat_cost_delta": optimised_inflation_adjusted_vs_flat_cost_delta,
-            "optimised_inflation_adjusted_vs_variable_cost_delta": optimised_inflation_adjusted_vs_variable_cost_delta
+            "optimised_inflation_adjusted_vs_variable_cost_delta": optimised_inflation_adjusted_vs_variable_cost_delta,
+            "non_optimised_variable_with_battery_cost": non_optimised_variable_with_battery_cost 
         }

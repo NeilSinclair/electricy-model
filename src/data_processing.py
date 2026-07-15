@@ -145,6 +145,10 @@ def calculate_usage_and_price(df_hourly: pd.DataFrame, day_ahead_hourly: pd.Data
     df_usage_and_price["c_per_kwh_flat_rate_cost"] = config.FLAT_RATE_C_PER_KWH
     df_usage_and_price["c_total_flat_cost"] = (df_usage_and_price["c_per_kwh_flat_rate_cost"] * df_usage_and_price["scaled_kwh_heat_usage"] / config.HEAT_PUMP_COP)
 
+    df_usage_and_price["c_total_gas_cost"] = (
+        df_usage_and_price["scaled_kwh_heat_usage"] * config.GAS_HEATING_C_PER_KWH
+    )
+
     logger.info(f"Usage data range: {df_usage_and_price['datetime'].min().strftime('%Y-%m-%d %H:%M:%S')} to {df_usage_and_price['datetime'].max().strftime('%Y-%m-%d %H:%M:%S')}")
 
     return df_usage_and_price

@@ -333,7 +333,7 @@ def show_cost_modelling(config):
                 st.session_state.optimisation_results.total_cost / 100  # type: ignore
             )   
 
-            # This gives the cost without CAPEX in €; we already add tax in here
+            # This gives the cost without CAPEX in €
             st.session_state.usage_data['c_variable_total_cost_without_battery'] = (
                 st.session_state.optimisation_results.grid * 
                 st.session_state.usage_data['c_variable_and_fixed_per_kwh'] / 100
@@ -535,30 +535,25 @@ def show_cost_modelling(config):
     col_result1, col_result2 = st.columns(2)    
     with col_result1:
         if st.session_state.inflation_adjusted_costs:
-            savings_vs_fixed_perc = (
-                st.session_state.inflation_adjusted_costs['optimised_inflation_adjusted_vs_flat_cost_delta'] /
-                inflation_adjusted_cost(
-                    st.session_state.usage_data['c_total_flat_cost'].sum()/100, 
-                    st.session_state.investment_duration_years, 
-                    st.session_state.config.ELECTRICITY_INFLATION_RATE
-                    )
+            savings_vs_baseline_perc = (
+                st.session_state.inflation_adjusted_costs['optimised_inflation_adjusted_vs_gas_baseline_cost_delta'] /
+                st.session_state.inflation_adjusted_costs['baseline_inflation_adjusted_gas_cost']
             )
-            savings_vs_fixed_perc = add_tax(savings_vs_fixed_perc)
         else:
-            savings_vs_fixed_perc = "N/A"
+            savings_vs_baseline_perc = "N/A"
 
         st.metric(
-            label="**Savings:** Variable rate with TES vs flat cost",
-            value=(f"{add_tax(st.session_state.inflation_adjusted_costs['optimised_inflation_adjusted_vs_flat_cost_delta']):,.0f} €"
+            label="**Savings:** Variable rate with TES vs gas baseline",
+            value=(f"{add_tax(st.session_state.inflation_adjusted_costs['optimised_inflation_adjusted_vs_gas_baseline_cost_delta']):,.0f} €"
                    if st.session_state.inflation_adjusted_costs else "N/A"
                    ),
             delta=(
-                f"{savings_vs_fixed_perc:,.2%} €" 
+                f"{savings_vs_baseline_perc:,.2%}" 
                 if st.session_state.inflation_adjusted_costs else "N/A"
                 )
                 ,
                 help=("This shows the difference between the optimized variable energy usage with optimised TES and Heat Pump CAPEX "
-                      "included compared with the flat rate cost with non-optimised Heat Pump and TES sizes over the investment duration."
+                      "included compared with the baseline cost for gas over the investment duration."
                 )
         )
     
@@ -566,13 +561,9 @@ def show_cost_modelling(config):
         if st.session_state.inflation_adjusted_costs:
             savings_vs_variable_perc = (
                 st.session_state.inflation_adjusted_costs['optimised_inflation_adjusted_vs_variable_cost_delta'] /
-                inflation_adjusted_cost(
-                    st.session_state.usage_data['c_total_variable_cost'].sum()/100, 
-                    st.session_state.investment_duration_years, 
-                    st.session_state.config.ELECTRICITY_INFLATION_RATE
-                    )
+                st.session_state.inflation_adjusted_costs['non_optimised_variable_with_battery_cost']
             )
-            savings_vs_variable_perc = add_tax(savings_vs_variable_perc)
+
         else:
             savings_vs_variable_perc = "N/A"
         st.metric(
@@ -582,11 +573,11 @@ def show_cost_modelling(config):
                     if st.session_state.inflation_adjusted_costs else "N/A"
                 ),
             delta=(
-                    f"{savings_vs_variable_perc:,.2%} €"
+                    f"{savings_vs_variable_perc:,.2%}"
                     if st.session_state.inflation_adjusted_costs else "N/A"
                 ),
             help=(
-                "This shows the difference between the optimized variable electricity usage with TES and Heat Pump CAPEX "
+                "This shows the difference between the OPTIMISED variable electricity usage with TES and Heat Pump CAPEX "
                 "compared with the non-optimised variable rate with non-optimised TES and Heat Pump sizes over the investment duration."
             )
         )
