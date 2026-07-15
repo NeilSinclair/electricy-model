@@ -179,7 +179,7 @@ def plot_raw_data(
             temp_df['price_c_per_kwh'], 
             label='Price (c/kWh)', 
             linestyle='dashed',
-            color='red', 
+            color='black', 
             alpha=0.5
         )
         ax3_right.set_ylabel('Price (c/kWh)', color='red')
